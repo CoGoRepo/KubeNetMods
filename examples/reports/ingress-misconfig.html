@@ -1,0 +1,119 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KubeNetMods Report</title>
+<style>
+:root { color-scheme: dark; --bg:#0b1117; --panel:#141b23; --line:#2b3542; --text:#f0f5fb; --muted:#9fb0c3; --pass:#44d07b; --fail:#ff5d62; --warn:#ffcc66; --skip:#a78bfa; --info:#65b7ff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:Segoe UI, Arial, sans-serif; line-height:1.45; }
+main { width:min(1260px, calc(100vw - 48px)); margin:28px auto 44px; }
+h1 { margin:0 0 22px; font-size:34px; }
+h2 { margin:0 0 14px; font-size:21px; }
+.grid { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(360px, .9fr); gap:16px; align-items:start; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; margin-bottom:16px; overflow:auto; }
+.diagnosis { border-left:4px solid var(--warn); }
+.stats { display:flex; flex-wrap:wrap; gap:10px; }
+.stat { min-width:110px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:14px; }
+table { width:100%; border-collapse:collapse; }
+th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+th { color:var(--muted); font-weight:600; }
+.meta-table th { width:190px; }
+code { background:#26313d; border-radius:4px; padding:2px 5px; color:#f7fafc; }
+.status { font-weight:700; font-size:12px; letter-spacing:.02em; }
+.status-pass { color:var(--pass); }
+.status-fail { color:var(--fail); }
+.status-warn { color:var(--warn); }
+.status-skip { color:var(--skip); }
+.status-info { color:var(--info); }
+li + li { margin-top:8px; }
+@media (max-width: 900px) { main { width:min(100vw - 24px, 1260px); } .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>KubeNetMods Network Check</h1>
+<section class="grid">
+<div class="panel diagnosis"><h2>Diagnosis</h2><ul><li>Ingress &#39;bad-ingress&#39; points at service &#39;ingress-target&#39; but backend port &#39;9999&#39; does not match the service ports.</li>
+<li>Ingress &#39;bad-ingress&#39; references missing/unreadable TLS secret &#39;missing-web-tls&#39;.</li>
+<li>Ingress references class &#39;no-such-class&#39;, but that IngressClass was not found/readable.</li></ul></div>
+<div class="panel"><h2>Target</h2><table class="meta-table"><tbody><tr><th>Namespace</th><td><code>knm-test-target</code></td></tr>
+<tr><th>Service</th><td><code>ingress-target</code></td></tr>
+<tr><th>Deployment</th><td><code>ingress-target</code></td></tr>
+<tr><th>ServicePort</th><td><code>80</code></td></tr>
+<tr><th>UrlScheme</th><td><code>http</code></td></tr>
+<tr><th>UrlPath</th><td><code>/</code></td></tr>
+<tr><th>SourceNamespace</th><td><code>knm-test-source</code></td></tr>
+<tr><th>TargetContext</th><td><code>kind-knm-video-calico</code></td></tr>
+<tr><th>SourceContext</th><td><code>kind-knm-video-calico</code></td></tr>
+<tr><th>KubeCommand</th><td><code>C:\Program Files\Docker\Docker\resources\bin\kubectl.exe</code></td></tr>
+<tr><th>DebugImage</th><td><code>nicolaka/netshoot:latest</code></td></tr>
+<tr><th>DebugImagePullPolicy</th><td><code>IfNotPresent</code></td></tr>
+<tr><th>TargetDebugPodName</th><td><code>kubenetmods-debug</code></td></tr>
+<tr><th>SourceDebugPodName</th><td><code>kubenetmods-source-debug</code></td></tr>
+<tr><th>Timestamp</th><td><code>2026-05-16T00:03:14.0397105-05:00</code></td></tr></tbody></table></div>
+</section>
+<section class="panel"><h2>Status Summary</h2><div class="stats"><div class='stat'><span class='status status-fail'>FAIL</span><strong>3</strong></div>
+<div class='stat'><span class='status status-info'>INFO</span><strong>11</strong></div>
+<div class='stat'><span class='status status-pass'>PASS</span><strong>30</strong></div>
+<div class='stat'><span class='status status-skip'>SKIP</span><strong>3</strong></div>
+<div class='stat'><span class='status status-warn'>WARN</span><strong>2</strong></div></div></section>
+<section class="panel"><h2>Failures</h2><table><thead><tr><th>Layer</th><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>Ingress Layer</td><td>bad-ingress backend port</td><td><span class='status status-fail'>FAIL</span></td><td>Ingress backend port &#39;9999&#39; does not match any port/name on service &#39;ingress-target&#39;.</td></tr>
+<tr><td>Ingress Layer</td><td>bad-ingress TLS secret</td><td><span class='status status-fail'>FAIL</span></td><td>TLS secret &#39;missing-web-tls&#39; was not found/readable in namespace &#39;knm-test-target&#39;.</td></tr>
+<tr><td>Ingress Layer</td><td>IngressClass no-such-class</td><td><span class='status status-fail'>FAIL</span></td><td>IngressClass &#39;no-such-class&#39; was not found/readable.</td></tr></tbody></table></section>
+<section class="panel"><h2>Warnings</h2><table><thead><tr><th>Layer</th><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>Ingress Layer</td><td>bad-ingress</td><td><span class='status status-warn'>WARN</span></td><td>Ingress bad-ingress class=no-such-class host=web.example.test path=/ backendPort=9999 address=(no address yet)</td></tr>
+<tr><td>Events Layer</td><td>target warnings</td><td><span class='status status-warn'>WARN</span></td><td>Recent Warning events in &#39;knm-test-target&#39;: Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/crash-demo-797f7f8c57-zmn99:BackOff</td></tr></tbody></table></section>
+<h2 style="margin-top:28px">Results By Layer</h2>
+<section class='panel'><h2>Cluster Access</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>kubectl</td><td><span class='status status-pass'>PASS</span></td><td>kubectl is available.</td></tr>
+<tr><td>target namespace</td><td><span class='status status-pass'>PASS</span></td><td>Target namespace &#39;knm-test-target&#39; exists.</td></tr>
+<tr><td>source namespace</td><td><span class='status status-pass'>PASS</span></td><td>Source namespace &#39;knm-test-source&#39; exists.</td></tr></tbody></table></section>
+<section class='panel'><h2>Cluster Health</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>node readiness</td><td><span class='status status-pass'>PASS</span></td><td>2/2 node(s) are Ready.</td></tr>
+<tr><td>node conditions</td><td><span class='status status-pass'>PASS</span></td><td>No NetworkUnavailable/pressure node conditions detected.</td></tr>
+<tr><td>CoreDNS service</td><td><span class='status status-info'>INFO</span></td><td>kube-dns service ClusterIP is 10.96.0.10.</td></tr>
+<tr><td>CoreDNS Corefile</td><td><span class='status status-pass'>PASS</span></td><td>CoreDNS Corefile includes the kubernetes plugin.</td></tr>
+<tr><td>CNI add-ons</td><td><span class='status status-pass'>PASS</span></td><td>7/7 CNI add-ons pod(s) are Ready.</td></tr>
+<tr><td>CNI provider</td><td><span class='status status-info'>INFO</span></td><td>CNI/provider guess: Calico.</td></tr>
+<tr><td>CoreDNS</td><td><span class='status status-pass'>PASS</span></td><td>2/2 CoreDNS pod(s) are Ready.</td></tr>
+<tr><td>kube-proxy</td><td><span class='status status-pass'>PASS</span></td><td>2/2 kube-proxy pod(s) are Ready.</td></tr></tbody></table></section>
+<section class='panel'><h2>Deployment Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>replicas</td><td><span class='status status-pass'>PASS</span></td><td>Deployment &#39;ingress-target&#39; has 1/1 available replica(s).</td></tr></tbody></table></section>
+<section class='panel'><h2>Service Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>service exists</td><td><span class='status status-pass'>PASS</span></td><td>Service &#39;ingress-target&#39; exists. Type=ClusterIP; ClusterIP=10.96.185.12; Ports=80-&gt;http/TCP; Selector=app=ingress-target</td></tr>
+<tr><td>service port</td><td><span class='status status-pass'>PASS</span></td><td>Service port 80 exists on the service.</td></tr>
+<tr><td>targetPort metadata</td><td><span class='status status-pass'>PASS</span></td><td>Service named targetPort &#39;http&#39; resolves to declared container port(s): ingress-target-6bc56b95dd-mfz85/echo:http=8080</td></tr></tbody></table></section>
+<section class='panel'><h2>Pod Health Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>pod selector</td><td><span class='status status-info'>INFO</span></td><td>Using pod selector: app=ingress-target</td></tr>
+<tr><td>pods exist</td><td><span class='status status-pass'>PASS</span></td><td>1 pod(s) found.</td></tr>
+<tr><td>running</td><td><span class='status status-pass'>PASS</span></td><td>1/1 pod(s) are Running.</td></tr>
+<tr><td>ready</td><td><span class='status status-pass'>PASS</span></td><td>1/1 pod(s) are Ready.</td></tr>
+<tr><td>container states</td><td><span class='status status-pass'>PASS</span></td><td>No obvious waiting/terminated container states detected.</td></tr></tbody></table></section>
+<section class='panel'><h2>EndpointSlice Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>ready addresses</td><td><span class='status status-pass'>PASS</span></td><td>Ready endpoint IPs: 10.244.206.140</td></tr>
+<tr><td>endpoint ports</td><td><span class='status status-info'>INFO</span></td><td>EndpointSlice port(s): http=8080/TCP</td></tr>
+<tr><td>endpoint port match</td><td><span class='status status-pass'>PASS</span></td><td>EndpointSlice port(s) 8080 match one of the expected service/target candidate port(s): 80, 8080.</td></tr></tbody></table></section>
+<section class='panel'><h2>Kubernetes NetworkPolicy Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>target policies</td><td><span class='status status-info'>INFO</span></td><td>1 native Kubernetes NetworkPolicy object(s) found in namespace &#39;knm-test-target&#39;.</td></tr>
+<tr><td>target pod policies</td><td><span class='status status-pass'>PASS</span></td><td>No native Kubernetes NetworkPolicy objects appear to select the target pods.</td></tr>
+<tr><td>source policies</td><td><span class='status status-info'>INFO</span></td><td>No native Kubernetes NetworkPolicy objects found in namespace &#39;knm-test-source&#39;.</td></tr></tbody></table></section>
+<section class='panel'><h2>Ingress Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>bad-ingress</td><td><span class='status status-warn'>WARN</span></td><td>Ingress bad-ingress class=no-such-class host=web.example.test path=/ backendPort=9999 address=(no address yet)</td></tr>
+<tr><td>bad-ingress backend port</td><td><span class='status status-fail'>FAIL</span></td><td>Ingress backend port &#39;9999&#39; does not match any port/name on service &#39;ingress-target&#39;.</td></tr>
+<tr><td>bad-ingress TLS secret</td><td><span class='status status-fail'>FAIL</span></td><td>TLS secret &#39;missing-web-tls&#39; was not found/readable in namespace &#39;knm-test-target&#39;.</td></tr>
+<tr><td>IngressClass no-such-class</td><td><span class='status status-fail'>FAIL</span></td><td>IngressClass &#39;no-such-class&#39; was not found/readable.</td></tr>
+<tr><td>controller pods</td><td><span class='status status-info'>INFO</span></td><td>No obvious ingress controller pods found by visible pod name/label. Static Ingress checks still apply; runtime controller health may require provider/controller-specific access.</td></tr></tbody></table></section>
+<section class='panel'><h2>Debug Pod</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>debug pod</td><td><span class='status status-skip'>SKIP</span></td><td>Skipped by -SkipDebugPod.</td></tr></tbody></table></section>
+<section class='panel'><h2>Source pod path</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>source pod selected</td><td><span class='status status-info'>INFO</span></td><td>Using source pod &#39;source-open-84f989b5dd-h8rj6&#39; selected by &#39;app=source-open&#39; for source-to-target checks.</td></tr>
+<tr><td>source pod resolve target FQDN</td><td><span class='status status-pass'>PASS</span></td><td>Source pod path in namespace &#39;knm-test-source&#39; resolved &#39;ingress-target.knm-test-target.svc.cluster.local&#39; using pod &#39;source-open-84f989b5dd-h8rj6&#39;.</td></tr>
+<tr><td>source pod curl target FQDN</td><td><span class='status status-pass'>PASS</span></td><td>http://ingress-target.knm-test-target.svc.cluster.local:80/ reachable from source pod path using pod &#39;source-open-84f989b5dd-h8rj6&#39;. HTTP status: 200</td></tr></tbody></table></section>
+<section class='panel'><h2>MTU Snapshot Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>source pod MTU</td><td><span class='status status-info'>INFO</span></td><td>Source exec pod MTU(s): lo=65536, tunl0=1480, eth0=1480</td></tr>
+<tr><td>source pod routes</td><td><span class='status status-info'>INFO</span></td><td>Source exec pod routes: default via 169.254.1.1 dev eth0 ; 169.254.1.1 dev eth0 scope link</td></tr></tbody></table></section>
+<section class='panel'><h2>Source DNS Policy Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>source resolv.conf</td><td><span class='status status-pass'>PASS</span></td><td>Runtime nameserver(s): 10.96.0.10; search domains: knm-test-source.svc.cluster.local, svc.cluster.local, cluster.local</td></tr>
+<tr><td>dns egress policy</td><td><span class='status status-pass'>PASS</span></td><td>No egress NetworkPolicies select source pod &#39;source-open-84f989b5dd-h8rj6&#39;. DNS egress is not isolated by Kubernetes NetworkPolicy.</td></tr></tbody></table></section>
+<section class='panel'><h2>Kubernetes NetworkPolicy Path Analysis</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>source egress to target</td><td><span class='status status-pass'>PASS</span></td><td>No egress NetworkPolicies select source pod &#39;source-open-84f989b5dd-h8rj6&#39;.</td></tr>
+<tr><td>target ingress from source</td><td><span class='status status-pass'>PASS</span></td><td>No ingress NetworkPolicies select the target pods.</td></tr></tbody></table></section>
+<section class='panel'><h2>CNI Policy Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>Calico target service path</td><td><span class='status status-pass'>PASS</span></td><td>No enforced Calico policy obviously blocks this source-to-target service path.</td></tr></tbody></table></section>
+<section class='panel'><h2>Combined Policy Summary</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>effective policy interpretation</td><td><span class='status status-pass'>PASS</span></td><td>Combined policy result: no policy block inferred for the tested source-to-target path. Native Kubernetes NetworkPolicy path checks passed or found no isolation; CNI-specific policy result: informational only. No enforced Calico policy obviously blocks this source-to-target service path.</td></tr></tbody></table></section>
+<section class='panel'><h2>Pod-to-Pod Connectivity Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>port candidates</td><td><span class='status status-info'>INFO</span></td><td>Testing direct pod port(s) 8080 based on service named targetPort &#39;http&#39; resolves to declared container port.</td></tr>
+<tr><td>source pod &#39;source-open-84f989b5dd-h8rj6&#39; to ingress-target-6bc56b95dd-mfz85:8080</td><td><span class='status status-pass'>PASS</span></td><td>http://10.244.206.140:8080/ reachable. HTTP status: 200</td></tr></tbody></table></section>
+<section class='panel'><h2>NodePort And Host Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>nodeport</td><td><span class='status status-skip'>SKIP</span></td><td>Service type is not NodePort/LoadBalancer.</td></tr></tbody></table></section>
+<section class='panel'><h2>Ingress Reachability Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>ingress urls</td><td><span class='status status-skip'>SKIP</span></td><td>No -IngressUrls were supplied.</td></tr></tbody></table></section>
+<section class='panel'><h2>Events Layer</h2><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody><tr><td>target warnings</td><td><span class='status status-warn'>WARN</span></td><td>Recent Warning events in &#39;knm-test-target&#39;: Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/crash-demo-797f7f8c57-zmn99:BackOff</td></tr>
+<tr><td>source warnings</td><td><span class='status status-pass'>PASS</span></td><td>No recent Warning events found in namespace &#39;knm-test-source&#39;.</td></tr></tbody></table></section>
+</main>
+</body>
+</html>

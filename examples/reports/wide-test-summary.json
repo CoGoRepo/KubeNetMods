@@ -1,0 +1,92 @@
+﻿[
+    {
+        "Name":  "healthy-cross-namespace",
+        "ExitCode":  0,
+        "Failures":  0,
+        "Warnings":  1,
+        "Diagnosis":  "",
+        "Html":  "examples/reports/healthy-cross-namespace.html",
+        "Json":  "examples/reports/healthy-cross-namespace.json"
+    },
+    {
+        "Name":  "wrong-targetport",
+        "ExitCode":  1,
+        "Failures":  1,
+        "Warnings":  2,
+        "Diagnosis":  "Primary issue: target pods are reachable directly, but the Service targetPort does not match declared container ports. Fix the Service targetPort or the pod containerPort/listener.",
+        "Html":  "examples/reports/wrong-targetport.html",
+        "Json":  "examples/reports/wrong-targetport.json"
+    },
+    {
+        "Name":  "selector-mismatch",
+        "ExitCode":  1,
+        "Failures":  3,
+        "Warnings":  1,
+        "Diagnosis":  "No pods matched the selector. The service selector/deployment labels may be wrong, or the workload has not created pods.",
+        "Html":  "examples/reports/selector-mismatch.html",
+        "Json":  "examples/reports/selector-mismatch.json"
+    },
+    {
+        "Name":  "crashloop-workload",
+        "ExitCode":  1,
+        "Failures":  5,
+        "Warnings":  2,
+        "Diagnosis":  "Deployment replicas are not available. Fix scheduling, image pulls, crashes, or probes before chasing service networking. | Primary issue: container is crashing. Check logs, config, secrets, probes, and startup command before networking. | The service has no ready endpoints because selected pods are not Ready. Fix workload health first.",
+        "Html":  "examples/reports/crashloop-workload.html",
+        "Json":  "examples/reports/crashloop-workload.json"
+    },
+    {
+        "Name":  "bad-image-pull",
+        "ExitCode":  1,
+        "Failures":  6,
+        "Warnings":  1,
+        "Diagnosis":  "Deployment replicas are not available. Fix scheduling, image pulls, crashes, or probes before chasing service networking. | Primary issue: image pull failure detected. Fix image name, registry auth, or image policy before networking. | The service has no ready endpoints because selected pods are not Ready. Fix workload health first.",
+        "Html":  "examples/reports/bad-image-pull.html",
+        "Json":  "examples/reports/bad-image-pull.json"
+    },
+    {
+        "Name":  "ingress-misconfig",
+        "ExitCode":  1,
+        "Failures":  3,
+        "Warnings":  2,
+        "Diagnosis":  "Ingress \u0027bad-ingress\u0027 points at service \u0027ingress-target\u0027 but backend port \u00279999\u0027 does not match the service ports. | Ingress \u0027bad-ingress\u0027 references missing/unreadable TLS secret \u0027missing-web-tls\u0027. | Ingress references class \u0027no-such-class\u0027, but that IngressClass was not found/readable.",
+        "Html":  "examples/reports/ingress-misconfig.html",
+        "Json":  "examples/reports/ingress-misconfig.json"
+    },
+    {
+        "Name":  "native-networkpolicy-block",
+        "ExitCode":  1,
+        "Failures":  3,
+        "Warnings":  2,
+        "Diagnosis":  "Likely issue: target ingress NetworkPolicy may block traffic from \u0027knm-test-source/source-open-84f989b5dd-h8rj6\u0027 to service \u0027knm-test-target/native-block\u0027. Policies: allow-other-source-only. | Direct pod IP connectivity failed from source pod \u0027source-open-84f989b5dd-h8rj6\u0027 to target pod \u0027native-block-5f88775fc6-s6z92\u0027 on port 8080. Check CNI/overlay routing, NetworkPolicy, sidecars, and whether the app listens on that port. | Source-to-target service connection failed while the target has ready endpoints. Check source egress policy, target ingress policy, service port, and app listener.",
+        "Html":  "examples/reports/native-networkpolicy-block.html",
+        "Json":  "examples/reports/native-networkpolicy-block.json"
+    },
+    {
+        "Name":  "calico-tier-pass-to-deny-wide",
+        "ExitCode":  1,
+        "Failures":  6,
+        "Warnings":  1,
+        "Diagnosis":  "Primary issue: Calico policy denies \u0027knm-test-source/source-client-77f4c8b6bc-vslfg\u0027 to service \u0027knm-test-target/calico-deny-web\u0027. First match: knm-test-source/security-deny-calico-deny-web egress Deny in tier \u0027knm-security\u0027. | Primary issue: Calico egress policy blocks DNS from \u0027knm-test-source/source-client-77f4c8b6bc-vslfg\u0027 to runtime resolver(s) 10.96.0.10 (CoreDNS service IP). Policies: knm-test-source/platform-pass-calico-deny-web (knm-platform), knm-test-source/security-deny-calico-deny-web (knm-security).",
+        "Html":  "examples/reports/calico-tier-pass-to-deny-wide.html",
+        "Json":  "examples/reports/calico-tier-pass-to-deny-wide.json"
+    },
+    {
+        "Name":  "nodeport-kind-host-path",
+        "ExitCode":  1,
+        "Failures":  2,
+        "Warnings":  1,
+        "Diagnosis":  "",
+        "Html":  "examples/reports/nodeport-kind-host-path.html",
+        "Json":  "examples/reports/nodeport-kind-host-path.json"
+    },
+    {
+        "Name":  "calico-dns-nodelocal-block-wide",
+        "ExitCode":  1,
+        "Failures":  4,
+        "Warnings":  0,
+        "Diagnosis":  "Primary issue: Calico egress policy blocks DNS from \u0027knm-dns-source/dns-client-658d84b5c4-5flz2\u0027 to its NodeLocalDNS/link-local runtime resolver(s) 169.254.20.10 (NodeLocalDNS/link-local). Add UDP/TCP 53 egress to the NodeLocalDNS/link-local resolver IP, or adjust the DNS policy/path.",
+        "Html":  "examples/reports/calico-dns-nodelocal-block-wide.html",
+        "Json":  "examples/reports/calico-dns-nodelocal-block-wide.json"
+    }
+]

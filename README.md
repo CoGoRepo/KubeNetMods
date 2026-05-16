@@ -10,6 +10,12 @@ The goal is simple:
 Is this actually a Kubernetes networking problem, and where should I look first?
 ```
 
+## Demo
+
+https://github.com/CoGoRepo/KubeNetMods/blob/main/examples/videos/KNM-DEMO.mp4
+
+The demo shows a Calico/NodeLocalDNS-style failure where the target service path is allowed, direct pod connectivity works, but the source pod's runtime DNS resolver is blocked by policy.
+
 ## Commands
 
 | Command | Purpose |
@@ -414,8 +420,18 @@ Sample HTML and JSON reports are in [`examples/reports`](./examples/reports).
 
 | Report | Scenario |
 |---|---|
+| [`healthy-cross-namespace.html`](./examples/reports/healthy-cross-namespace.html) | Clean cross-namespace source-to-target path with no inferred failures. |
+| [`wrong-targetport.html`](./examples/reports/wrong-targetport.html) | Service routes to the wrong `targetPort` while direct pod IP connectivity still works. |
+| [`selector-mismatch.html`](./examples/reports/selector-mismatch.html) | Service selector does not match the intended backend pods, leaving no ready endpoints. |
+| [`crashloop-workload.html`](./examples/reports/crashloop-workload.html) | Workload health failure where the selected backend pod is crashing instead of serving traffic. |
+| [`bad-image-pull.html`](./examples/reports/bad-image-pull.html) | Image pull failure that prevents backend readiness and endpoint population. |
+| [`ingress-misconfig.html`](./examples/reports/ingress-misconfig.html) | Ingress points at a bad backend port, missing TLS secret, and missing IngressClass. |
+| [`native-networkpolicy-block.html`](./examples/reports/native-networkpolicy-block.html) | Native Kubernetes `NetworkPolicy` likely blocks source-to-target ingress. |
+| [`nodeport-kind-host-path.html`](./examples/reports/nodeport-kind-host-path.html) | NodePort path in a local kind-style environment where host reachability can differ from cluster reachability. |
 | [`calico-dns-nodelocal-block.html`](./examples/reports/calico-dns-nodelocal-block.html) | Calico egress policy allows the target service path but blocks the source pod's NodeLocalDNS/link-local runtime resolver. |
+| [`calico-dns-nodelocal-block-wide.html`](./examples/reports/calico-dns-nodelocal-block-wide.html) | Same Calico/NodeLocalDNS failure generated during the broader `-SkipDebugPod` test pass. |
 | [`calico-tier-pass-to-deny.html`](./examples/reports/calico-tier-pass-to-deny.html) | Calico tier ordering where a `Pass` in one tier continues to a later tier that denies the path. |
+| [`calico-tier-pass-to-deny-wide.html`](./examples/reports/calico-tier-pass-to-deny-wide.html) | Calico tier `Pass` followed by a later tier `Deny` from the broader test pass. |
 
 Sample alert payloads are in [`examples/alerts`](./examples/alerts).
 

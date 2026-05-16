@@ -1,0 +1,424 @@
+﻿{
+    "Target":  {
+                   "Namespace":  "knm-test-target",
+                   "Service":  "wrong-port",
+                   "Deployment":  "wrong-port",
+                   "ServicePort":  80,
+                   "UrlScheme":  "http",
+                   "UrlPath":  "/",
+                   "SourceNamespace":  "knm-test-source",
+                   "TargetContext":  "kind-knm-video-calico",
+                   "SourceContext":  "kind-knm-video-calico",
+                   "KubeCommand":  "C:\\Program Files\\Docker\\Docker\\resources\\bin\\kubectl.exe",
+                   "DebugImage":  "nicolaka/netshoot:latest",
+                   "DebugImagePullPolicy":  "IfNotPresent",
+                   "TargetDebugPodName":  "kubenetmods-debug",
+                   "SourceDebugPodName":  "kubenetmods-source-debug",
+                   "Timestamp":  "2026-05-16T00:00:59.1753324-05:00"
+               },
+    "Diagnoses":  [
+                      "Primary issue: target pods are reachable directly, but the Service targetPort does not match declared container ports. Fix the Service targetPort or the pod containerPort/listener."
+                  ],
+    "StatusSummary":  [
+                          {
+                              "Status":  "FAIL",
+                              "Count":  1
+                          },
+                          {
+                              "Status":  "INFO",
+                              "Count":  11
+                          },
+                          {
+                              "Status":  "PASS",
+                              "Count":  28
+                          },
+                          {
+                              "Status":  "SKIP",
+                              "Count":  2
+                          },
+                          {
+                              "Status":  "WARN",
+                              "Count":  2
+                          }
+                      ],
+    "Failures":  [
+                     {
+                         "Layer":  "Source pod path",
+                         "Check":  "source pod curl target FQDN",
+                         "Status":  "FAIL",
+                         "Message":  "http://wrong-port.knm-test-target.svc.cluster.local:80/ failed from source pod path using pod \u0027source-open-84f989b5dd-h8rj6\u0027 in namespace \u0027knm-test-source\u0027.",
+                         "Data":  null
+                     }
+                 ],
+    "Warnings":  [
+                     {
+                         "Layer":  "Service Layer",
+                         "Check":  "targetPort metadata",
+                         "Status":  "WARN",
+                         "Message":  "Service targetPort 9999 does not match any declared container port. Declared ports: wrong-port-578778d7b4-pmh4n/echo:8080",
+                         "Data":  null
+                     },
+                     {
+                         "Layer":  "Events Layer",
+                         "Check":  "target warnings",
+                         "Status":  "WARN",
+                         "Message":  "Recent Warning events in \u0027knm-test-target\u0027: Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/crash-demo-797f7f8c57-zmn99:BackOff",
+                         "Data":  null
+                     }
+                 ],
+    "RawResults":  [
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "kubectl",
+                           "Status":  "PASS",
+                           "Message":  "kubectl is available.",
+                           "Timestamp":  "2026-05-16T00:00:55.4480357-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "target namespace",
+                           "Status":  "PASS",
+                           "Message":  "Target namespace \u0027knm-test-target\u0027 exists.",
+                           "Timestamp":  "2026-05-16T00:00:55.5259394-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "source namespace",
+                           "Status":  "PASS",
+                           "Message":  "Source namespace \u0027knm-test-source\u0027 exists.",
+                           "Timestamp":  "2026-05-16T00:00:55.6020609-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node readiness",
+                           "Status":  "PASS",
+                           "Message":  "2/2 node(s) are Ready.",
+                           "Timestamp":  "2026-05-16T00:00:55.7322715-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node conditions",
+                           "Status":  "PASS",
+                           "Message":  "No NetworkUnavailable/pressure node conditions detected.",
+                           "Timestamp":  "2026-05-16T00:00:55.7322715-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS service",
+                           "Status":  "INFO",
+                           "Message":  "kube-dns service ClusterIP is 10.96.0.10.",
+                           "Timestamp":  "2026-05-16T00:00:56.4943716-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS Corefile",
+                           "Status":  "PASS",
+                           "Message":  "CoreDNS Corefile includes the kubernetes plugin.",
+                           "Timestamp":  "2026-05-16T00:00:56.5684936-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI add-ons",
+                           "Status":  "PASS",
+                           "Message":  "7/7 CNI add-ons pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T00:00:56.5710311-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI provider",
+                           "Status":  "INFO",
+                           "Message":  "CNI/provider guess: Calico.",
+                           "Timestamp":  "2026-05-16T00:00:56.5710311-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS",
+                           "Status":  "PASS",
+                           "Message":  "2/2 CoreDNS pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T00:00:56.5720337-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "kube-proxy",
+                           "Status":  "PASS",
+                           "Message":  "2/2 kube-proxy pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T00:00:56.5720337-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Deployment Layer",
+                           "Check":  "replicas",
+                           "Status":  "PASS",
+                           "Message":  "Deployment \u0027wrong-port\u0027 has 1/1 available replica(s).",
+                           "Timestamp":  "2026-05-16T00:00:56.6457287-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service exists",
+                           "Status":  "PASS",
+                           "Message":  "Service \u0027wrong-port\u0027 exists. Type=ClusterIP; ClusterIP=10.96.180.15; Ports=80-\u003e9999/TCP; Selector=app=wrong-port",
+                           "Timestamp":  "2026-05-16T00:00:56.7184438-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service port",
+                           "Status":  "PASS",
+                           "Message":  "Service port 80 exists on the service.",
+                           "Timestamp":  "2026-05-16T00:00:56.7184438-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pod selector",
+                           "Status":  "INFO",
+                           "Message":  "Using pod selector: app=wrong-port",
+                           "Timestamp":  "2026-05-16T00:00:56.8070759-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pods exist",
+                           "Status":  "PASS",
+                           "Message":  "1 pod(s) found.",
+                           "Timestamp":  "2026-05-16T00:00:56.8070759-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "running",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Running.",
+                           "Timestamp":  "2026-05-16T00:00:56.8080827-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "ready",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T00:00:56.8080827-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "container states",
+                           "Status":  "PASS",
+                           "Message":  "No obvious waiting/terminated container states detected.",
+                           "Timestamp":  "2026-05-16T00:00:56.8090828-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "targetPort metadata",
+                           "Status":  "WARN",
+                           "Message":  "Service targetPort 9999 does not match any declared container port. Declared ports: wrong-port-578778d7b4-pmh4n/echo:8080",
+                           "Timestamp":  "2026-05-16T00:00:56.8246705-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "ready addresses",
+                           "Status":  "PASS",
+                           "Message":  "Ready endpoint IPs: 10.244.206.134",
+                           "Timestamp":  "2026-05-16T00:00:56.8967322-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint ports",
+                           "Status":  "INFO",
+                           "Message":  "EndpointSlice port(s): http=9999/TCP",
+                           "Timestamp":  "2026-05-16T00:00:56.8977309-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint port match",
+                           "Status":  "PASS",
+                           "Message":  "EndpointSlice port(s) 9999 match one of the expected service/target candidate port(s): 80, 9999.",
+                           "Timestamp":  "2026-05-16T00:00:56.8987324-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "target policies",
+                           "Status":  "INFO",
+                           "Message":  "1 native Kubernetes NetworkPolicy object(s) found in namespace \u0027knm-test-target\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:56.9689321-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "target pod policies",
+                           "Status":  "PASS",
+                           "Message":  "No native Kubernetes NetworkPolicy objects appear to select the target pods.",
+                           "Timestamp":  "2026-05-16T00:00:56.9689321-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "source policies",
+                           "Status":  "INFO",
+                           "Message":  "No native Kubernetes NetworkPolicy objects found in namespace \u0027knm-test-source\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:57.0415156-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Ingress Layer",
+                           "Check":  "routes",
+                           "Status":  "INFO",
+                           "Message":  "No Ingress routes in namespace \u0027knm-test-target\u0027 point at service \u0027wrong-port\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:57.1129535-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Debug Pod",
+                           "Check":  "debug pod",
+                           "Status":  "SKIP",
+                           "Message":  "Skipped by -SkipDebugPod.",
+                           "Timestamp":  "2026-05-16T00:00:57.1129535-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod selected",
+                           "Status":  "INFO",
+                           "Message":  "Using source pod \u0027source-open-84f989b5dd-h8rj6\u0027 selected by \u0027app=source-open\u0027 for source-to-target checks.",
+                           "Timestamp":  "2026-05-16T00:00:57.2017661-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod MTU",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod MTU(s): lo=65536, tunl0=1480, eth0=1480",
+                           "Timestamp":  "2026-05-16T00:00:57.3008995-05:00",
+                           "Data":  "1: lo: \u003cLOOPBACK,UP,LOWER_UP\u003e mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\r\n2: tunl0@NONE: \u003cNOARP\u003e mtu 1480 qdisc noop state DOWN mode DEFAULT group default qlen 1000\\    link/ipip 0.0.0.0 brd 0.0.0.0\r\n3: eth0@if16: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1480 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 0e:37:d7:c9:8b:d1 brd ff:ff:ff:ff:ff:ff link-netnsid 0"
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod routes",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod routes: default via 169.254.1.1 dev eth0 ; 169.254.1.1 dev eth0 scope link",
+                           "Timestamp":  "2026-05-16T00:00:57.4028433-05:00",
+                           "Data":  "default via 169.254.1.1 dev eth0 \r\n169.254.1.1 dev eth0 scope link"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "source resolv.conf",
+                           "Status":  "PASS",
+                           "Message":  "Runtime nameserver(s): 10.96.0.10; search domains: knm-test-source.svc.cluster.local, svc.cluster.local, cluster.local",
+                           "Timestamp":  "2026-05-16T00:00:57.5029565-05:00",
+                           "Data":  "search knm-test-source.svc.cluster.local svc.cluster.local cluster.local\r\nnameserver 10.96.0.10\r\noptions ndots:5"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "dns egress policy",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027source-open-84f989b5dd-h8rj6\u0027. DNS egress is not isolated by Kubernetes NetworkPolicy.",
+                           "Timestamp":  "2026-05-16T00:00:57.5034695-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "source egress to target",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027source-open-84f989b5dd-h8rj6\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:57.5040052-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "target ingress from source",
+                           "Status":  "PASS",
+                           "Message":  "No ingress NetworkPolicies select the target pods.",
+                           "Timestamp":  "2026-05-16T00:00:57.5045229-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Calico target service path",
+                           "Status":  "PASS",
+                           "Message":  "No enforced Calico policy obviously blocks this source-to-target service path.",
+                           "Timestamp":  "2026-05-16T00:00:58.3516699-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Combined Policy Summary",
+                           "Check":  "effective policy interpretation",
+                           "Status":  "PASS",
+                           "Message":  "Combined policy result: no policy block inferred for the tested source-to-target path. Native Kubernetes NetworkPolicy path checks passed or found no isolation; CNI-specific policy result: informational only. No enforced Calico policy obviously blocks this source-to-target service path.",
+                           "Timestamp":  "2026-05-16T00:00:58.3521982-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "port candidates",
+                           "Status":  "INFO",
+                           "Message":  "Testing direct pod port(s) 8080 based on declared TCP container port(s).",
+                           "Timestamp":  "2026-05-16T00:00:58.3609983-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "source pod \u0027source-open-84f989b5dd-h8rj6\u0027 to wrong-port-578778d7b4-pmh4n:8080",
+                           "Status":  "PASS",
+                           "Message":  "http://10.244.206.134:8080/ reachable. HTTP status: 200",
+                           "Timestamp":  "2026-05-16T00:00:58.4648960-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod resolve target FQDN",
+                           "Status":  "PASS",
+                           "Message":  "Source pod path in namespace \u0027knm-test-source\u0027 resolved \u0027wrong-port.knm-test-target.svc.cluster.local\u0027 using pod \u0027source-open-84f989b5dd-h8rj6\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:58.5763012-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod curl target FQDN",
+                           "Status":  "FAIL",
+                           "Message":  "http://wrong-port.knm-test-target.svc.cluster.local:80/ failed from source pod path using pod \u0027source-open-84f989b5dd-h8rj6\u0027 in namespace \u0027knm-test-source\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:58.8260166-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "NodePort And Host Layer",
+                           "Check":  "nodeport",
+                           "Status":  "SKIP",
+                           "Message":  "Service type is not NodePort/LoadBalancer.",
+                           "Timestamp":  "2026-05-16T00:00:58.8260166-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "target warnings",
+                           "Status":  "WARN",
+                           "Message":  "Recent Warning events in \u0027knm-test-target\u0027: Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/bad-image-f98c4dc6f-p2zmn:Failed; Pod/crash-demo-797f7f8c57-zmn99:BackOff",
+                           "Timestamp":  "2026-05-16T00:00:59.0601849-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "source warnings",
+                           "Status":  "PASS",
+                           "Message":  "No recent Warning events found in namespace \u0027knm-test-source\u0027.",
+                           "Timestamp":  "2026-05-16T00:00:59.1733322-05:00",
+                           "Data":  null
+                       }
+                   ],
+    "ExitCode":  1
+}
