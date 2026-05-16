@@ -408,18 +408,33 @@ function Test-KubeNetService {
         try {
             $ingresses = ConvertFrom-KubeNetJson -State $state -Context $targetContextEffective -Arguments @('get', 'ingress', '-n', $Namespace)
             $matches = @()
+            $ingressClassControllers = @{}
             foreach ($ingress in @($ingresses.items)) {
+                $ingressClass = if ($ingress.spec.ingressClassName) { [string]$ingress.spec.ingressClassName } else { '(default)' }
+                $address = (@($ingress.status.loadBalancer.ingress | ForEach-Object { if ($_.ip) { $_.ip } elseif ($_.hostname) { $_.hostname } }) -join ', ')
+                if ($ingress.spec.defaultBackend.service.name -eq $ServiceName) {
+                    $backendPort = if ($ingress.spec.defaultBackend.service.port.number) { [string]$ingress.spec.defaultBackend.service.port.number } elseif ($ingress.spec.defaultBackend.service.port.name) { [string]$ingress.spec.defaultBackend.service.port.name } else { '' }
+                    $matches += [PSCustomObject]@{
+                        Name        = $ingress.metadata.name
+                        Class       = $ingressClass
+                        Host        = '(defaultBackend)'
+                        Path        = '(all unmatched paths)'
+                        BackendPort = $backendPort
+                        Address     = $address
+                        Object      = $ingress
+                    }
+                }
                 foreach ($rule in @($ingress.spec.rules)) {
                     foreach ($pathItem in @($rule.http.paths)) {
                         if ($pathItem.backend.service.name -eq $ServiceName) {
                             $backendPort = if ($pathItem.backend.service.port.number) { [string]$pathItem.backend.service.port.number } elseif ($pathItem.backend.service.port.name) { [string]$pathItem.backend.service.port.name } else { '' }
                             $matches += [PSCustomObject]@{
                                 Name        = $ingress.metadata.name
-                                Class       = if ($ingress.spec.ingressClassName) { $ingress.spec.ingressClassName } else { '(default)' }
+                                Class       = $ingressClass
                                 Host        = if ($rule.host) { $rule.host } else { '*' }
                                 Path        = if ($pathItem.path) { $pathItem.path } else { '/' }
                                 BackendPort = $backendPort
-                                Address     = (@($ingress.status.loadBalancer.ingress | ForEach-Object { if ($_.ip) { $_.ip } elseif ($_.hostname) { $_.hostname } }) -join ', ')
+                                Address     = $address
                                 Object      = $ingress
                             }
                         }
@@ -442,6 +457,14 @@ function Test-KubeNetService {
                         Add-KubeNetResult -State $state -Layer 'Ingress Layer' -Check "$($match.Name) backend port" -Status 'PASS' -Message "Ingress backend port '$($match.BackendPort)' matches service '$ServiceName'."
                     }
 
+                    $annotationNames = @()
+                    if ($match.Object.metadata.annotations) {
+                        $annotationNames = @($match.Object.metadata.annotations.PSObject.Properties.Name | Sort-Object)
+                    }
+                    if ($annotationNames.Count -gt 0) {
+                        Add-KubeNetResult -State $state -Layer 'Ingress Layer' -Check "$($match.Name) annotations" -Status 'INFO' -Message "Ingress has annotation(s): $($annotationNames -join ', '). KubeNetMods surfaces annotations but does not validate controller-specific annotation semantics."
+                    }
+
                     foreach ($tls in @($match.Object.spec.tls)) {
                         if ([string]::IsNullOrWhiteSpace($tls.secretName)) { continue }
                         $tlsSecret = Invoke-KubeNetKubectl -State $state -Context $targetContextEffective -Arguments @('get', 'secret', $tls.secretName, '-n', $Namespace, '-o', 'json') -AllowFailure
@@ -460,6 +483,9 @@ function Test-KubeNetService {
                     if ($classResult.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($classResult.Text)) {
                         $classObj = $classResult.Text | ConvertFrom-Json
                         Add-KubeNetResult -State $state -Layer 'Ingress Layer' -Check "IngressClass $className" -Status 'PASS' -Message "IngressClass '$className' exists. Controller=$($classObj.spec.controller)."
+                        if ($classObj.spec.controller) {
+                            $ingressClassControllers[$className] = [string]$classObj.spec.controller
+                        }
                     } else {
                         Add-KubeNetResult -State $state -Layer 'Ingress Layer' -Check "IngressClass $className" -Status 'FAIL' -Message "IngressClass '$className' was not found/readable."
                         Add-KubeNetDiagnosis -State $state -Message "Ingress references class '$className', but that IngressClass was not found/readable."
@@ -469,10 +495,29 @@ function Test-KubeNetService {
                 $allPods = Invoke-KubeNetKubectl -State $state -Context $targetContextEffective -Arguments @('get', 'pods', '-A', '-o', 'json') -AllowFailure
                 if ($allPods.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($allPods.Text)) {
                     $podObj = $allPods.Text | ConvertFrom-Json
+                    $controllerHints = @(
+                        'ingress-nginx',
+                        'nginx-ingress',
+                        'traefik',
+                        'contour',
+                        'haproxy',
+                        'istio-ingressgateway',
+                        'aws-load-balancer-controller',
+                        'azure-alb',
+                        'gateway-api',
+                        'envoy'
+                    )
+                    foreach ($controller in @($ingressClassControllers.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                        $controllerHints += $controller
+                        $controllerHints += ($controller -replace '/', '-')
+                        $controllerHints += ($controller -split '[./]' | Where-Object { $_.Length -ge 4 })
+                    }
+                    $controllerHintPattern = (($controllerHints | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique | ForEach-Object { [regex]::Escape($_.ToLowerInvariant()) }) -join '|')
+                    if ([string]::IsNullOrWhiteSpace($controllerHintPattern)) { $controllerHintPattern = 'a^' }
                     $controllerPods = @($podObj.items | Where-Object {
                         $n = "$($_.metadata.namespace)/$($_.metadata.name)".ToLowerInvariant()
                         $labels = if ($_.metadata.labels) { ($_.metadata.labels.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ' } else { '' }
-                        "$n $labels" -match 'ingress-nginx|nginx-ingress|traefik|contour|haproxy|istio-ingressgateway|aws-load-balancer-controller|azure-alb|gateway-api|envoy'
+                        "$n $labels".ToLowerInvariant() -match $controllerHintPattern
                     })
                     if ($controllerPods.Count -gt 0) {
                         $readyControllers = @($controllerPods | Where-Object { Get-KubeNetPodReady -Pod $_ })

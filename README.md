@@ -53,7 +53,7 @@ The `Diagnosis` section is filtered so downstream symptoms do not drown out the 
 | DNS | Source pod resolver data, target workload DNS checks when requested, `/etc/resolv.conf`, `dnsPolicy`, `hostNetwork`, search domains, CoreDNS/NodeLocalDNS policy hints. |
 | Native Kubernetes NetworkPolicy | Source egress isolation, target ingress isolation, DNS egress hints, and likely source-to-target allow/block interpretation for standard Kubernetes `NetworkPolicy`. |
 | CNI-specific policy | Extra Calico/Cilium policy analysis when those provider CRDs are present and readable. Depth varies by provider. |
-| Ingress | Ingress objects pointing to the target Service, backend service port/name, TLS secret existence, IngressClass existence, controller pod hints, optional external URL checks. |
+| Ingress | Ingress rule backends and `defaultBackend` pointing to the target Service, backend service port/name, TLS secret existence, IngressClass existence, annotation visibility, controller pod hints, optional external URL checks. |
 | NodePort/LoadBalancer | NodePort inside-cluster and host reachability, LoadBalancer status addresses, optional explicit external URL checks. |
 | Snapshots | Pod-side MTU and route snapshots from exec-capable pods, plus source/target `eth0` MTU comparison when available. These are snapshots, not full packet-size path-MTU tests. |
 | Events | Recent Warning events in target/source namespaces. |
@@ -111,7 +111,7 @@ Cilium analysis does not fully emulate Cilium identity resolution, FQDN policies
 
 ## What It Cannot Do Yet
 
-- It does not inspect Gateway API resources.
+- It does not inspect Gateway API resources such as `Gateway`, `HTTPRoute`, `TLSRoute`, or `GRPCRoute`. Gateway API users should treat the current Ingress layer as Kubernetes `Ingress`-only.
 - It does not deeply understand service mesh config such as Istio, Linkerd, or Consul.
 - It does not run provider-specific dataplane commands such as `cilium monitor`, `cilium policy trace`, `calicoctl`, or Felix/BPF inspection.
 - It does not deeply inspect kube-proxy iptables, IPVS, or eBPF state.
@@ -121,6 +121,7 @@ Cilium analysis does not fully emulate Cilium identity resolution, FQDN policies
 - It does not prove country/region edge-provider outages unless they appear through explicit external URL tests.
 - It does not validate application auth or business logic. HTTP checks focus on reachability.
 - NetworkPolicy analysis is heuristic. Generated policies, admission-mutated policies, service mesh policies, and provider-specific dataplane state may still need human review.
+- Ingress annotation checks are visibility-only. KubeNetMods surfaces annotation names but does not validate controller-specific annotation semantics.
 - Alert normalization is best-effort because alert platforms and teams use different label/tag names.
 
 ## Safety
