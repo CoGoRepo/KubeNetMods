@@ -414,6 +414,7 @@ Sample HTML and JSON reports are in [`examples/reports`](./examples/reports).
 
 | Report | Scenario |
 |---|---|
+| [`calico-dns-nodelocal-block.html`](./examples/reports/calico-dns-nodelocal-block.html) | Calico egress policy allows the target service path but blocks the source pod's NodeLocalDNS/link-local runtime resolver. |
 | [`calico-tier-pass-to-deny.html`](./examples/reports/calico-tier-pass-to-deny.html) | Calico tier ordering where a `Pass` in one tier continues to a later tier that denies the path. |
 
 Sample alert payloads are in [`examples/alerts`](./examples/alerts).
