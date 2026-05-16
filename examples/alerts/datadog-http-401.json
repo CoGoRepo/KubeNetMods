@@ -1,0 +1,12 @@
+{
+  "alert_title": "API 401 rate is elevated",
+  "alert_status": "Triggered",
+  "alert_type": "error",
+  "event_msg": "HTTP 401 responses increased for api-service. This usually indicates authentication or token behavior, not a network path failure.",
+  "tags": [
+    "cluster:lab-cluster",
+    "kube_namespace:apps",
+    "service:api-service",
+    "env:test"
+  ]
+}

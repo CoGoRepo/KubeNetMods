@@ -1,0 +1,9 @@
+{
+  "title": "External API egress timeout",
+  "severity": "warning",
+  "namespace": "apps",
+  "service": "api-service",
+  "source_namespace": "apps",
+  "source_pod_selector": "app=api",
+  "message": "api-service is seeing egress timeouts while calling https://api.partner.example.com/health. Check egress policy, DNS, firewall, NAT, or proxy behavior."
+}

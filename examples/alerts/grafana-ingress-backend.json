@@ -1,0 +1,28 @@
+{
+  "receiver": "kubenetmods",
+  "status": "firing",
+  "orgId": 1,
+  "commonLabels": {
+    "alertname": "IngressBackendUnavailable",
+    "severity": "critical",
+    "cluster": "lab-cluster",
+    "namespace": "knm-ingress-misconfig",
+    "service": "web"
+  },
+  "commonAnnotations": {
+    "summary": "Ingress route is returning backend errors",
+    "description": "The route for https://web.example.test/ is failing. Check ingress class, TLS, and backend service port."
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "ingress": "web-ingress"
+      },
+      "annotations": {
+        "dashboardURL": "https://grafana.example.test/d/kubernetes/ingress"
+      },
+      "startsAt": "2026-05-14T14:05:00Z"
+    }
+  ]
+}

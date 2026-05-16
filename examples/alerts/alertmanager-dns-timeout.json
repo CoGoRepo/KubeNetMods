@@ -1,0 +1,29 @@
+{
+  "receiver": "kubenetmods",
+  "status": "firing",
+  "commonLabels": {
+    "alertname": "DNSLookupTimeout",
+    "severity": "warning",
+    "cluster": "lab-cluster",
+    "namespace": "knm-dns-target",
+    "service": "web",
+    "source_namespace": "knm-dns-source",
+    "source_pod_selector": "app=dns-client"
+  },
+  "commonAnnotations": {
+    "summary": "DNS UDP requests are timing out from dns-client pods",
+    "description": "The source workload is timing out while resolving web.knm-dns-target.svc.cluster.local."
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "pod": "dns-client-7c8b5d4f9d-x2p6q"
+      },
+      "annotations": {
+        "runbook_url": "https://example.com/runbooks/dns-timeout"
+      },
+      "startsAt": "2026-05-14T14:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# PowerShell/module build output
+bin/
+obj/
+*.nupkg
+
+# Generated reports
+/reports/
+*.tmp
+*.log
+
+# Curated report exporter and sample reports are source/example content.
+!/Reports/
+!/Reports/**
+!/examples/reports/
+!/examples/reports/**
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

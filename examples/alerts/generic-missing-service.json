@@ -1,0 +1,7 @@
+{
+  "title": "Pod-to-service connection timeout",
+  "severity": "warning",
+  "namespace": "apps",
+  "pod": "frontend-7f8d9c4d5b-x2p6q",
+  "message": "The frontend pod reports connection timeouts, but the alert payload does not identify the target Kubernetes Service."
+}
