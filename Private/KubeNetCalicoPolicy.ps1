@@ -1,153 +1,25 @@
-function Get-KubeNetCalicoLabelValue {
-    param([object]$Resource, [string]$Key)
-
-    if ($null -eq $Resource -or [string]::IsNullOrWhiteSpace($Key)) { return $null }
-    if ($Key -in @('projectcalico.org/name', 'kubernetes.io/metadata.name')) {
-        return [string]$Resource.metadata.name
-    }
-    if ($Key -eq 'projectcalico.org/namespace') {
-        return [string]$Resource.metadata.namespace
-    }
-    $direct = [string]$Resource.metadata.labels.$Key
-    if (-not [string]::IsNullOrWhiteSpace($direct)) { return $direct }
-
-    $calicoMetadata = [string]$Resource.metadata.annotations.'projectcalico.org/metadata'
-    if (-not [string]::IsNullOrWhiteSpace($calicoMetadata)) {
-        try {
-            $decoded = $calicoMetadata | ConvertFrom-Json
-            $annotated = [string]$decoded.labels.$Key
-            if (-not [string]::IsNullOrWhiteSpace($annotated)) { return $annotated }
-        } catch {
-            return $null
-        }
-    }
-
-    $null
-}
-
-function Split-KubeNetCalicoSelector {
-    param([string]$Text, [string]$Operator)
-
-    $items = @()
-    $depth = 0
-    $quote = ''
-    $start = 0
-    for ($i = 0; $i -lt $Text.Length; $i++) {
-        $char = $Text[$i]
-        if ($quote) {
-            if ($char -eq $quote) { $quote = '' }
-            continue
-        }
-        if ($char -eq "'" -or $char -eq '"') {
-            $quote = $char
-            continue
-        }
-        if ($char -eq '(') { $depth++; continue }
-        if ($char -eq ')') { $depth--; continue }
-        if ($depth -eq 0 -and $i + $Operator.Length -le $Text.Length -and $Text.Substring($i, $Operator.Length) -eq $Operator) {
-            $items += $Text.Substring($start, $i - $start).Trim()
-            $start = $i + $Operator.Length
-            $i += $Operator.Length - 1
-        }
-    }
-    $items += $Text.Substring($start).Trim()
-    @($items | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-}
-
-function Remove-KubeNetCalicoOuterParens {
-    param([string]$Text)
-
-    $clean = $Text.Trim()
-    while ($clean.StartsWith('(') -and $clean.EndsWith(')')) {
-        $depth = 0
-        $balanced = $true
-        for ($i = 0; $i -lt $clean.Length; $i++) {
-            if ($clean[$i] -eq '(') { $depth++ }
-            if ($clean[$i] -eq ')') { $depth-- }
-            if ($depth -eq 0 -and $i -lt ($clean.Length - 1)) {
-                $balanced = $false
-                break
-            }
-        }
-        if (-not $balanced) { break }
-        $clean = $clean.Substring(1, $clean.Length - 2).Trim()
-    }
-    $clean
-}
-
-function Test-KubeNetCalicoSelector {
-    param([string]$Selector, [object]$Resource)
-
-    if ([string]::IsNullOrWhiteSpace($Selector) -or $Selector.Trim() -eq 'all()') { return $true }
-    $clean = Remove-KubeNetCalicoOuterParens -Text $Selector
-    if ($clean -eq 'global()') {
-        return [string]::IsNullOrWhiteSpace([string]$Resource.metadata.namespace)
-    }
-
-    $orParts = Split-KubeNetCalicoSelector -Text $clean -Operator '||'
-    if ($orParts.Count -gt 1) {
-        foreach ($part in $orParts) {
-            if (Test-KubeNetCalicoSelector -Selector $part -Resource $Resource) { return $true }
-        }
-        return $false
-    }
-
-    $andParts = Split-KubeNetCalicoSelector -Text $clean -Operator '&&'
-    if ($andParts.Count -gt 1) {
-        foreach ($part in $andParts) {
-            if (-not (Test-KubeNetCalicoSelector -Selector $part -Resource $Resource)) { return $false }
-        }
-        return $true
-    }
-
-    if ($clean.StartsWith('!')) {
-        return -not (Test-KubeNetCalicoSelector -Selector $clean.Substring(1).Trim() -Resource $Resource)
-    }
-
-    if ($clean -match '^has\(([A-Za-z0-9_./-]+)\)$') {
-        return -not [string]::IsNullOrWhiteSpace((Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1]))
-    }
-
-    if ($clean -match '^([A-Za-z0-9_./-]+)\s*(==|=)\s*["'']?([^"'']+)["'']?$') {
-        return (Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1]) -eq $Matches[3]
-    }
-
-    if ($clean -match '^([A-Za-z0-9_./-]+)\s*!=\s*["'']?([^"'']+)["'']?$') {
-        return (Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1]) -ne $Matches[2]
-    }
-
-    if ($clean -match '^([A-Za-z0-9_./-]+)\s+in\s+\{(.+)\}$') {
-        $actual = Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1]
-        $values = @($Matches[2] -split ',' | ForEach-Object { $_.Trim().Trim("'").Trim('"') })
-        return $values -contains $actual
-    }
-
-    if ($clean -match '^([A-Za-z0-9_./-]+)\s+not\s+in\s+\{(.+)\}$') {
-        $actual = Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1]
-        $values = @($Matches[2] -split ',' | ForEach-Object { $_.Trim().Trim("'").Trim('"') })
-        return -not ($values -contains $actual)
-    }
-
-    if ($clean -match '^([A-Za-z0-9_./-]+)\s+(contains|starts with|ends with)\s+["'']([^"'']+)["'']$') {
-        $actual = [string](Get-KubeNetCalicoLabelValue -Resource $Resource -Key $Matches[1])
-        $expected = $Matches[3]
-        switch ($Matches[2]) {
-            'contains' { return $actual.Contains($expected) }
-            'starts with' { return $actual.StartsWith($expected) }
-            'ends with' { return $actual.EndsWith($expected) }
-        }
-    }
-
-    $false
-}
-
 function Test-KubeNetCalicoPolicyAppliesToPod {
-    param([object]$Policy, [object]$Pod)
+    param([object]$Policy, [object]$Pod, [object]$Namespace = $null)
 
     $policyNamespace = [string]$Policy.metadata.namespace
     $isGlobal = [string]$Policy.kind -eq 'GlobalNetworkPolicy' -or [string]::IsNullOrWhiteSpace($policyNamespace)
     if (-not $isGlobal -and [string]$Pod.metadata.namespace -ne $policyNamespace) {
         return $false
+    }
+
+    $namespaceSelector = [string]$Policy.spec.namespaceSelector
+    if ($isGlobal -and -not [string]::IsNullOrWhiteSpace($namespaceSelector)) {
+        if ($null -eq $Namespace) {
+            $Namespace = [PSCustomObject]@{
+                metadata = [PSCustomObject]@{
+                    name   = [string]$Pod.metadata.namespace
+                    labels = [PSCustomObject]@{}
+                }
+            }
+        }
+        if (-not (Test-KubeNetCalicoSelector -Selector $namespaceSelector -Resource $Namespace)) {
+            return $false
+        }
     }
 
     Test-KubeNetCalicoSelector -Selector ([string]$Policy.spec.selector) -Resource $Pod
@@ -238,10 +110,13 @@ function Test-KubeNetCalicoPortTokenMatch {
         return @($PortFacts.Ports) -contains $number
     }
 
-    if ($text -match '^(\d+):(\d+)$') {
-        $start = [int]$Matches[1]
-        $end = [int]$Matches[2]
-        return @($PortFacts.Ports | Where-Object { $_ -ge $start -and $_ -le $end }).Count -gt 0
+    $rangeParts = @($text.Split(':'))
+    if ($rangeParts.Count -eq 2) {
+        $start = 0
+        $end = 0
+        if ([int]::TryParse($rangeParts[0], [ref]$start) -and [int]::TryParse($rangeParts[1], [ref]$end) -and $start -le $end) {
+            return @($PortFacts.Ports | Where-Object { $_ -ge $start -and $_ -le $end }).Count -gt 0
+        }
     }
 
     @($PortFacts.Names) -contains $text
@@ -345,7 +220,16 @@ function Test-KubeNetCalicoNetworkSetMatches {
 
     $isGlobal = [string]$NetworkSet.kind -eq 'GlobalNetworkSet' -or [string]::IsNullOrWhiteSpace([string]$NetworkSet.metadata.namespace)
     if ($isGlobal) {
-        if (-not ([string]::IsNullOrWhiteSpace($NamespaceSelector) -or $NamespaceSelector -match 'global\(\)')) { return $false }
+        if (-not [string]::IsNullOrWhiteSpace($NamespaceSelector)) {
+            $globalNamespace = [PSCustomObject]@{
+                metadata = [PSCustomObject]@{
+                    name      = ''
+                    namespace = ''
+                    labels    = [PSCustomObject]@{}
+                }
+            }
+            if (-not (Test-KubeNetCalicoSelector -Selector $NamespaceSelector -Resource $globalNamespace)) { return $false }
+        }
     } else {
         if ([string]::IsNullOrWhiteSpace($NamespaceSelector)) {
             if ([string]$NetworkSet.metadata.namespace -ne [string]$PeerNamespace.metadata.name) { return $false }
@@ -409,7 +293,9 @@ function Test-KubeNetCalicoEntityMatches {
     $selector = [string]$Entity.selector
     $notSelector = [string]$Entity.notSelector
     $namespaceSelector = [string]$Entity.namespaceSelector
-    if ([string]::IsNullOrWhiteSpace($selector) -and [string]::IsNullOrWhiteSpace($notSelector)) {
+    if ([string]::IsNullOrWhiteSpace($selector) -and
+        [string]::IsNullOrWhiteSpace($notSelector) -and
+        [string]::IsNullOrWhiteSpace($namespaceSelector)) {
         return [PSCustomObject]@{ Matches = $true; Reason = 'IP/service/port criteria match, no selector restriction' }
     }
 
@@ -437,7 +323,7 @@ function Test-KubeNetCalicoEntityMatches {
     }
 
     foreach ($networkSet in @($NetworkSets)) {
-        $positive = if ([string]::IsNullOrWhiteSpace($selector)) { $true } else { Test-KubeNetCalicoNetworkSetMatches -NetworkSet $networkSet -Selector $selector -NamespaceSelector $namespaceSelector -PeerNamespace $PeerNamespace -PeerIps $PeerIps }
+        $positive = Test-KubeNetCalicoNetworkSetMatches -NetworkSet $networkSet -Selector $selector -NamespaceSelector $namespaceSelector -PeerNamespace $PeerNamespace -PeerIps $PeerIps
         $negative = if ([string]::IsNullOrWhiteSpace($notSelector)) { $false } else { Test-KubeNetCalicoNetworkSetMatches -NetworkSet $networkSet -Selector $notSelector -NamespaceSelector $namespaceSelector -PeerNamespace $PeerNamespace -PeerIps $PeerIps }
         if ($positive -and -not $negative) {
             return [PSCustomObject]@{ Matches = $true; Reason = "selector matches network set '$($networkSet.metadata.name)'" }
@@ -553,6 +439,7 @@ function Test-KubeNetCalicoDnsEgressPolicy {
         [object[]]$NetworkSets,
         [object[]]$Tiers,
         [object]$SourcePod,
+        [object]$SourceNamespace,
         [object]$ResolvSummary,
         [object[]]$CoreDnsPods,
         [object[]]$NodeLocalDnsPods,
@@ -569,8 +456,10 @@ function Test-KubeNetCalicoDnsEgressPolicy {
     $selectedPolicies = @($Policies | Where-Object {
         $null -ne $_ -and
         [string]$_.kind -notmatch '^Staged' -and
+        -not (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector ([string]$_.spec.selector)) -and
+        -not (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector ([string]$_.spec.namespaceSelector)) -and
         (Get-KubeNetCalicoPolicyTypes -Policy $_) -contains 'Egress' -and
-        (Test-KubeNetCalicoPolicyAppliesToPod -Policy $_ -Pod $SourcePod)
+        (Test-KubeNetCalicoPolicyAppliesToPod -Policy $_ -Pod $SourcePod -Namespace $SourceNamespace)
     })
     if ($selectedPolicies.Count -eq 0) {
         return [PSCustomObject]@{ Results = $results; Diagnoses = $diagnoses; AnyDnsAllow = $false; AnyBlocked = $false }
@@ -583,6 +472,7 @@ function Test-KubeNetCalicoDnsEgressPolicy {
     } | Sort-Object -Unique)
     $resolverMessages = @()
     $blockedResolvers = @()
+    $explicitDenyResolvers = @()
     $anyAllow = $false
 
     foreach ($nameserver in @($ResolvSummary.Nameservers)) {
@@ -620,6 +510,7 @@ function Test-KubeNetCalicoDnsEgressPolicy {
             $resolverMessages += "Resolver $nameserver ($kind) is allowed by $($firstDnsMatch.Policy) in tier '$($firstDnsMatch.Tier)'."
         } elseif ($firstDnsMatch -and $firstDnsMatch.Action -eq 'Deny') {
             $blockedResolvers += "$nameserver ($kind)"
+            $explicitDenyResolvers += "$nameserver ($kind)"
             $resolverMessages += "Resolver $nameserver ($kind) is explicitly denied by $($firstDnsMatch.Policy) in tier '$($firstDnsMatch.Tier)'."
         } else {
             $blockedResolvers += "$nameserver ($kind)"
@@ -631,20 +522,35 @@ function Test-KubeNetCalicoDnsEgressPolicy {
         $results += [PSCustomObject]@{ Check = 'Calico DNS egress resolver'; Status = 'FAIL'; Message = "Calico egress policy selects source pod '$($SourcePod.metadata.name)', but runtime DNS resolver(s) are not allowed. $($resolverMessages -join ' ') Selecting policy/policies: $($policyNames -join ', ')." }
         $resolverLine = $blockedResolvers -join ', '
         if (($blockedResolvers -join ' ') -match 'NodeLocalDNS') {
+            $why = if ($explicitDenyResolvers.Count -gt 0) {
+                'The first matching Calico DNS rule is Deny for the pod runtime resolver.'
+            } else {
+                'DNS policy appears to allow a different DNS path, but this pod is configured to query a NodeLocalDNS/link-local resolver instead.'
+            }
             $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
                 'Primary issue: Calico egress policy does not allow the source pod runtime DNS resolver.',
                 ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
                 ('Runtime resolver(s): `{0}`' -f $resolverLine),
                 ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
-                'Why it failed: DNS policy appears to allow a different DNS path, but this pod is configured to query a NodeLocalDNS/link-local resolver instead.'
+                ('Why it failed: {0}' -f $why)
             )
         } else {
+            $primary = if ($explicitDenyResolvers.Count -gt 0) {
+                'Primary issue: Calico egress policy explicitly denies DNS for the source pod.'
+            } else {
+                'Primary issue: Calico egress policy may block DNS for the source pod.'
+            }
+            $why = if ($explicitDenyResolvers.Count -gt 0) {
+                'The first matching Calico DNS rule is Deny for the pod runtime resolver.'
+            } else {
+                'No Calico Allow/Pass rule obviously matches the pod runtime resolver on UDP/TCP 53.'
+            }
             $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
-                'Primary issue: Calico egress policy may block DNS for the source pod.',
+                $primary,
                 ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
                 ('Runtime resolver(s): `{0}`' -f $resolverLine),
                 ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
-                'Why it failed: No Calico Allow/Pass rule obviously matches the pod runtime resolver on UDP/TCP 53.'
+                ('Why it failed: {0}' -f $why)
             )
         }
         return [PSCustomObject]@{ Results = $results; Diagnoses = $diagnoses; AnyDnsAllow = $anyAllow; AnyBlocked = $true }
@@ -664,6 +570,23 @@ function New-KubeNetCalicoUnsupportedResults {
     }
 
     foreach ($policy in @($Policies | Where-Object { $null -ne $_ })) {
+        $selector = [string]$policy.spec.selector
+        if (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector $selector) {
+            $name = if ($policy.metadata.namespace) { "$($policy.metadata.namespace)/$($policy.metadata.name)" } else { [string]$policy.metadata.name }
+            $results += [PSCustomObject]@{ Check = 'Calico selector syntax'; Status = 'WARN'; Message = "Policy '$name' has an odd number of double quotes in spec.selector. Selector: $selector. This may be a typo that changes or prevents policy matching." }
+        } elseif (-not (Test-KubeNetCalicoSelectorCanParse -Selector $selector)) {
+            $name = if ($policy.metadata.namespace) { "$($policy.metadata.namespace)/$($policy.metadata.name)" } else { [string]$policy.metadata.name }
+            $results += [PSCustomObject]@{ Check = 'Calico selector syntax'; Status = 'WARN'; Message = "Policy '$name' uses spec.selector syntax KubeNetMods could not parse. Selector: $selector. Path decisions involving this policy are lower confidence." }
+        }
+        $namespaceSelector = [string]$policy.spec.namespaceSelector
+        if (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector $namespaceSelector) {
+            $name = if ($policy.metadata.namespace) { "$($policy.metadata.namespace)/$($policy.metadata.name)" } else { [string]$policy.metadata.name }
+            $results += [PSCustomObject]@{ Check = 'Calico namespaceSelector syntax'; Status = 'WARN'; Message = "Policy '$name' has an odd number of double quotes in spec.namespaceSelector. Selector: $namespaceSelector. This may be a typo that changes which namespaces the policy selects." }
+        } elseif (-not (Test-KubeNetCalicoSelectorCanParse -Selector $namespaceSelector)) {
+            $name = if ($policy.metadata.namespace) { "$($policy.metadata.namespace)/$($policy.metadata.name)" } else { [string]$policy.metadata.name }
+            $results += [PSCustomObject]@{ Check = 'Calico namespaceSelector syntax'; Status = 'WARN'; Message = "Policy '$name' uses spec.namespaceSelector syntax KubeNetMods could not parse. Selector: $namespaceSelector. Path decisions involving this policy are lower confidence." }
+        }
+
         foreach ($rule in @($policy.spec.ingress + $policy.spec.egress | Where-Object { $null -ne $_ })) {
             if ($rule.http) {
                 $name = if ($policy.metadata.namespace) { "$($policy.metadata.namespace)/$($policy.metadata.name)" } else { [string]$policy.metadata.name }
@@ -714,6 +637,7 @@ function Test-KubeNetCalicoPolicyPath {
     $sourceEgressEnforcing = @()
     $sourceDnsAllow = @()
     $targetIngressEnforcing = @()
+    $malformedDefaultDenyPolicies = @()
 
     foreach ($policy in @($enforcedPolicies)) {
         $policyNamespace = [string]$policy.metadata.namespace
@@ -723,8 +647,27 @@ function Test-KubeNetCalicoPolicyPath {
         $tierOrder = Get-KubeNetCalicoTierOrder -TierName $tier -Tiers $Tiers
         $policyOrder = Get-KubeNetCalicoPolicyOrder -Policy $policy
         $types = Get-KubeNetCalicoPolicyTypes -Policy $policy
+        $selectorHasSyntaxRisk = (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector ([string]$policy.spec.selector)) -or
+            (Test-KubeNetCalicoSelectorHasUnbalancedQuotes -Selector ([string]$policy.spec.namespaceSelector)) -or
+            (-not (Test-KubeNetCalicoSelectorCanParse -Selector ([string]$policy.spec.selector))) -or
+            (-not (Test-KubeNetCalicoSelectorCanParse -Selector ([string]$policy.spec.namespaceSelector)))
+        if ($selectorHasSyntaxRisk) {
+            $selectorMatchesSourceIgnoringNamespace = Test-KubeNetCalicoSelector -Selector ([string]$policy.spec.selector) -Resource $SourcePod
+            $selectorMatchesTargetIgnoringNamespace = $false
+            foreach ($targetPod in @($TargetPods)) {
+                if (Test-KubeNetCalicoSelector -Selector ([string]$policy.spec.selector) -Resource $targetPod) {
+                    $selectorMatchesTargetIgnoringNamespace = $true
+                    break
+                }
+            }
+            if (($types -contains 'Egress' -and $selectorMatchesSourceIgnoringNamespace -and @($policy.spec.egress | Where-Object { $null -ne $_ }).Count -eq 0) -or
+                ($types -contains 'Ingress' -and $selectorMatchesTargetIgnoringNamespace -and @($policy.spec.ingress | Where-Object { $null -ne $_ }).Count -eq 0)) {
+                $malformedDefaultDenyPolicies += "$policyName ($tier)"
+            }
+            continue
+        }
 
-        if ($types -contains 'Egress' -and (Test-KubeNetCalicoPolicyAppliesToPod -Policy $policy -Pod $SourcePod)) {
+        if ($types -contains 'Egress' -and (Test-KubeNetCalicoPolicyAppliesToPod -Policy $policy -Pod $SourcePod -Namespace $SourceNamespace)) {
             $sourceEgressEnforcing += "$policyName ($tier)"
             $ruleIndex = 0
             foreach ($rule in @($policy.spec.egress | Where-Object { $null -ne $_ })) {
@@ -746,7 +689,7 @@ function Test-KubeNetCalicoPolicyPath {
         if ($types -contains 'Ingress') {
             $appliesToAnyTarget = $false
             foreach ($targetPod in @($TargetPods)) {
-                if (Test-KubeNetCalicoPolicyAppliesToPod -Policy $policy -Pod $targetPod) {
+                if (Test-KubeNetCalicoPolicyAppliesToPod -Policy $policy -Pod $targetPod -Namespace $TargetNamespace) {
                     $appliesToAnyTarget = $true
                     break
                 }
@@ -772,6 +715,7 @@ function Test-KubeNetCalicoPolicyPath {
 
     $orderedMatches = @($matchingRules | Sort-Object TierOrder, PolicyOrder, RuleIndex, Policy, Direction)
     $firstMatch = $orderedMatches | Select-Object -First 1
+    $passWithoutLaterMatch = $false
     if ($firstMatch -and $firstMatch.Action -eq 'Pass') {
         $passMatch = $firstMatch
         $nextTierMatch = @($orderedMatches | Where-Object { $_.TierOrder -gt $passMatch.TierOrder } | Select-Object -First 1)
@@ -781,6 +725,7 @@ function Test-KubeNetCalicoPolicyPath {
         } else {
             $results += [PSCustomObject]@{ Check = 'Calico target path pass action'; Status = 'WARN'; Message = "For the target service path, first matching Calico action is Pass: $($passMatch.Policy) $($passMatch.Direction) in tier '$($passMatch.Tier)'. No later tier match was found; KubeNetMods does not evaluate workload profiles after Pass." }
             $firstMatch = $null
+            $passWithoutLaterMatch = $true
         }
     }
 
@@ -804,7 +749,17 @@ function Test-KubeNetCalicoPolicyPath {
         }
     }
 
-    if (-not $firstMatch -and $sourceEgressEnforcing.Count -gt 0) {
+    if ($malformedDefaultDenyPolicies.Count -gt 0) {
+        $policyNames = @($malformedDefaultDenyPolicies | Sort-Object -Unique)
+        $results += [PSCustomObject]@{ Check = 'Calico selector safety'; Status = 'FAIL'; Message = "Calico default-deny-shaped policy has selector syntax KubeNetMods cannot safely evaluate. It may unexpectedly select the tested source/target path. Policy/policies: $($policyNames -join ', ')." }
+        $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+            'Primary issue: Calico selector syntax risk on a default-deny-shaped policy.',
+            ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+            ('Target Service: `{0}/{1}`' -f $TargetNamespace.metadata.name, $Service.metadata.name),
+            ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+            'Why it may fail: the policy has malformed or unsupported selector syntax and no Allow rules for at least one selected direction, so Calico may default-deny more namespaces or workloads than intended.'
+        )
+    } elseif (-not $firstMatch -and -not $passWithoutLaterMatch -and $sourceEgressEnforcing.Count -gt 0) {
         $policyNames = @($sourceEgressEnforcing | Sort-Object -Unique)
         $results += [PSCustomObject]@{ Check = 'Calico target path egress default-deny'; Status = 'FAIL'; Message = "Calico policy selects source pod '$($SourcePod.metadata.name)' for egress, but no Calico Allow/Pass rule obviously matches the target service path/port. Selecting policy/policies: $($policyNames -join ', ')." }
         $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
@@ -814,7 +769,7 @@ function Test-KubeNetCalicoPolicyPath {
             ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
             'Why it failed: the source pod is egress-isolated by Calico policy, but no Allow/Pass rule obviously matches the tested Service path.'
         )
-    } elseif (-not $firstMatch -and $targetIngressEnforcing.Count -gt 0) {
+    } elseif (-not $firstMatch -and -not $passWithoutLaterMatch -and $targetIngressEnforcing.Count -gt 0) {
         $policyNames = @($targetIngressEnforcing | Sort-Object -Unique)
         $results += [PSCustomObject]@{ Check = 'Calico target path ingress default-deny'; Status = 'FAIL'; Message = "Calico policy selects target pod(s) for ingress, but no Calico Allow/Pass rule obviously matches this source/target service port. Selecting policy/policies: $($policyNames -join ', ')." }
         $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
@@ -826,7 +781,7 @@ function Test-KubeNetCalicoPolicyPath {
         )
     }
 
-    $dnsResolverAnalysis = Test-KubeNetCalicoDnsEgressPolicy -Policies $enforcedPolicies -NetworkSets $NetworkSets -Tiers $Tiers -SourcePod $SourcePod -ResolvSummary $SourceResolvSummary -CoreDnsPods $CoreDnsPods -NodeLocalDnsPods $NodeLocalDnsPods -KubeSystemNamespace $KubeSystemNamespace -CoreDnsServiceIp $CoreDnsServiceIp
+    $dnsResolverAnalysis = Test-KubeNetCalicoDnsEgressPolicy -Policies $enforcedPolicies -NetworkSets $NetworkSets -Tiers $Tiers -SourcePod $SourcePod -SourceNamespace $SourceNamespace -ResolvSummary $SourceResolvSummary -CoreDnsPods $CoreDnsPods -NodeLocalDnsPods $NodeLocalDnsPods -KubeSystemNamespace $KubeSystemNamespace -CoreDnsServiceIp $CoreDnsServiceIp
     $results += @($dnsResolverAnalysis.Results)
     $diagnoses += @($dnsResolverAnalysis.Diagnoses)
 
