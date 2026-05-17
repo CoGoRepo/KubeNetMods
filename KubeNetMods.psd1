@@ -1,6 +1,6 @@
 @{
     RootModule        = 'KubeNetMods.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.2.0'
     GUID              = 'd53bc721-0f9c-4ed5-bb16-8d01a3f64a86'
     Author            = 'CoGoRepo'
     CompanyName       = 'CoGoRepo'
@@ -11,6 +11,8 @@
         'ConvertTo-KubeNetAlert',
         'ConvertTo-KubeNetServiceParameters',
         'Invoke-KubeNetAlertTriage',
+        'Test-KubeNetEgress',
+        'Test-KubeNetIngress',
         'Test-KubeNetService'
     )
     CmdletsToExport   = @()

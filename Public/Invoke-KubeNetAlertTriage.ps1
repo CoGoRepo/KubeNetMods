@@ -71,7 +71,11 @@ function Invoke-KubeNetAlertTriage {
             $params.PassThru = $true
             if ($Quiet) { $params.Quiet = $true }
 
-            $report = Test-KubeNetService @params
+            $report = switch ($plan.Command) {
+                'Test-KubeNetEgress' { Test-KubeNetEgress @params }
+                'Test-KubeNetIngress' { Test-KubeNetIngress @params }
+                default { Test-KubeNetService @params }
+            }
             $outputs += [PSCustomObject]@{
                 Alert  = $alerts[$i]
                 Plan   = $plan

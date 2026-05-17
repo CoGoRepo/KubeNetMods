@@ -83,11 +83,35 @@ function Add-KubeNetDiagnosis {
 function Get-KubeNetFinalDiagnoses {
     param(
         [string[]]$Diagnoses,
-        [object[]]$Results = @()
+        [object[]]$Results = @(),
+        [ValidateSet('Service', 'Egress', 'Ingress')]
+        [string]$Mode = 'Service'
     )
 
     $items = @($Diagnoses | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($items.Count -eq 0) { return @() }
+
+    if ($Mode -eq 'Egress') {
+        $hasExternalDnsFailure = @($items | Where-Object { $_ -match '^External DNS resolution failed' }).Count -gt 0
+        $hasExternalEgressFailure = @($items | Where-Object { $_ -match '^External egress to' }).Count -gt 0
+        $filtered = foreach ($item in $items) {
+            if ($hasExternalDnsFailure -and $item -match '^External egress to') { continue }
+            $item
+        }
+        return @($filtered | Select-Object -Unique)
+    }
+
+    if ($Mode -eq 'Ingress') {
+        $hasIngressConfigRoot = @($items | Where-Object { $_ -match '^Ingress .*points at service|^Ingress .*references missing|^Ingress references class' }).Count -gt 0
+        $hasIngressRuntimeRoot = @($items | Where-Object { $_ -match '^Ingress URL ' }).Count -gt 0
+        $filtered = foreach ($item in $items) {
+            if ($hasIngressConfigRoot -and $item -match '^Ingress URL ') { continue }
+            if ($hasIngressConfigRoot -and $item -match '^External target ') { continue }
+            if ($hasIngressRuntimeRoot -and $item -match '^External target ') { continue }
+            $item
+        }
+        return @($filtered | Select-Object -Unique)
+    }
 
     $runtimeFailures = @($Results | Where-Object {
         $_.Status -eq 'FAIL' -and $_.Layer -in @(

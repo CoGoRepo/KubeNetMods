@@ -12,5 +12,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-KubeNetAlert',
     'ConvertTo-KubeNetServiceParameters',
     'Invoke-KubeNetAlertTriage',
+    'Test-KubeNetEgress',
+    'Test-KubeNetIngress',
     'Test-KubeNetService'
 )
