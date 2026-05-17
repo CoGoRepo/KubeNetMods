@@ -1,0 +1,447 @@
+﻿{
+    "Target":  {
+                   "UrlScheme":  "http",
+                   "Context":  "kind-knm-cilium-policy",
+                   "SourceDebugPodName":  "kubenetmods-source-debug",
+                   "UseDebugPod":  false,
+                   "TargetPort":  80,
+                   "SourceNamespace":  "client-dev",
+                   "TargetDebugPodName":  "kubenetmods-debug",
+                   "Timestamp":  "2026-05-17T02:29:45.2205010-05:00",
+                   "TargetService":  "web",
+                   "KubeCommand":  "C:\\Program Files\\Docker\\Docker\\resources\\bin\\kubectl.exe",
+                   "UrlPath":  "/",
+                   "SourceContext":  "kind-knm-cilium-policy",
+                   "Deployment":  "web",
+                   "TargetOnly":  false,
+                   "DebugImagePullPolicy":  "IfNotPresent",
+                   "TargetNamespace":  "app",
+                   "DebugImage":  "nicolaka/netshoot:latest",
+                   "Command":  "Test-KubeNetService"
+               },
+    "Diagnoses":  [
+                      "Primary issue: Cilium egress policy does not allow the source pod runtime DNS resolver.\nSource: `client-dev/client-nodelocal-c7f69c8b8-8s4m4`\nRuntime resolver(s): `169.254.20.10 (NodeLocalDNS/link-local)`\nPolicy/policies: `client-dev/dns-to-coredns-only`\nWhy it failed: DNS policy appears to allow a different DNS path, but this pod is configured to query a NodeLocalDNS/link-local resolver instead."
+                  ],
+    "StatusSummary":  [
+                          {
+                              "Status":  "FAIL",
+                              "Count":  4
+                          },
+                          {
+                              "Status":  "INFO",
+                              "Count":  13
+                          },
+                          {
+                              "Status":  "PASS",
+                              "Count":  27
+                          },
+                          {
+                              "Status":  "SKIP",
+                              "Count":  2
+                          }
+                      ],
+    "Failures":  [
+                     {
+                         "Layer":  "CNI Policy Layer",
+                         "Check":  "Cilium DNS egress resolver",
+                         "Status":  "FAIL",
+                         "Message":  "Cilium egress policy selects source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027, but runtime DNS resolver(s) are not allowed. Resolver 169.254.20.10 (NodeLocalDNS/link-local) is not obviously allowed by Cilium egress policy selecting \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027. Selecting policy/policies: client-dev/dns-to-coredns-only.",
+                         "Data":  null
+                     },
+                     {
+                         "Layer":  "Combined Policy Summary",
+                         "Check":  "effective policy interpretation",
+                         "Status":  "FAIL",
+                         "Message":  "Combined policy result: blocked or likely blocked. native Kubernetes NetworkPolicy does not appear to block this path; CNI-specific policy blocks or likely blocks this path.",
+                         "Data":  null
+                     },
+                     {
+                         "Layer":  "Source pod path",
+                         "Check":  "source pod resolve target FQDN",
+                         "Status":  "FAIL",
+                         "Message":  "Source pod path in namespace \u0027client-dev\u0027 could not resolve \u0027web.app.svc.cluster.local\u0027 using pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027.",
+                         "Data":  null
+                     },
+                     {
+                         "Layer":  "Source pod path",
+                         "Check":  "source pod curl target FQDN",
+                         "Status":  "FAIL",
+                         "Message":  "http://web.app.svc.cluster.local:80/ failed from source pod path using pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027 in namespace \u0027client-dev\u0027.",
+                         "Data":  null
+                     }
+                 ],
+    "Warnings":  [
+
+                 ],
+    "RawResults":  [
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "kubectl",
+                           "Status":  "PASS",
+                           "Message":  "kubectl is available.",
+                           "Timestamp":  "2026-05-17T02:29:21.7613119-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "target namespace",
+                           "Status":  "PASS",
+                           "Message":  "Target namespace \u0027app\u0027 exists.",
+                           "Timestamp":  "2026-05-17T02:29:21.9152579-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "source namespace",
+                           "Status":  "PASS",
+                           "Message":  "Source namespace \u0027client-dev\u0027 exists.",
+                           "Timestamp":  "2026-05-17T02:29:21.9819457-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node readiness",
+                           "Status":  "PASS",
+                           "Message":  "3/3 node(s) are Ready.",
+                           "Timestamp":  "2026-05-17T02:29:22.0733447-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node conditions",
+                           "Status":  "PASS",
+                           "Message":  "No NetworkUnavailable/pressure node conditions detected.",
+                           "Timestamp":  "2026-05-17T02:29:22.0743445-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS service",
+                           "Status":  "INFO",
+                           "Message":  "kube-dns service ClusterIP is 10.96.0.10.",
+                           "Timestamp":  "2026-05-17T02:29:22.3958398-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS Corefile",
+                           "Status":  "PASS",
+                           "Message":  "CoreDNS Corefile includes the kubernetes plugin.",
+                           "Timestamp":  "2026-05-17T02:29:22.4611196-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI add-ons",
+                           "Status":  "PASS",
+                           "Message":  "11/11 CNI add-ons pod(s) are Ready.",
+                           "Timestamp":  "2026-05-17T02:29:22.4762957-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI provider",
+                           "Status":  "INFO",
+                           "Message":  "CNI/provider guess: Cilium.",
+                           "Timestamp":  "2026-05-17T02:29:22.4772983-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS",
+                           "Status":  "PASS",
+                           "Message":  "2/2 CoreDNS pod(s) are Ready.",
+                           "Timestamp":  "2026-05-17T02:29:22.4792977-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "kube-proxy",
+                           "Status":  "INFO",
+                           "Message":  "No obvious kube-proxy pod found in kube-system. Cilium was detected and may be running kube-proxy replacement for service routing.",
+                           "Timestamp":  "2026-05-17T02:29:22.4802968-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Deployment Layer",
+                           "Check":  "replicas",
+                           "Status":  "PASS",
+                           "Message":  "Deployment \u0027web\u0027 has 1/1 available replica(s).",
+                           "Timestamp":  "2026-05-17T02:29:22.5520159-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service exists",
+                           "Status":  "PASS",
+                           "Message":  "Service \u0027web\u0027 exists. Type=ClusterIP; ClusterIP=10.96.6.189; Ports=80-\u003eweb/TCP; Selector=app=web",
+                           "Timestamp":  "2026-05-17T02:29:22.6304959-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service port",
+                           "Status":  "PASS",
+                           "Message":  "Service port 80 exists on the service.",
+                           "Timestamp":  "2026-05-17T02:29:22.6404986-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pod selector",
+                           "Status":  "INFO",
+                           "Message":  "Using pod selector: app=web",
+                           "Timestamp":  "2026-05-17T02:29:22.7165313-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pods exist",
+                           "Status":  "PASS",
+                           "Message":  "1 pod(s) found.",
+                           "Timestamp":  "2026-05-17T02:29:22.7201466-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "running",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Running.",
+                           "Timestamp":  "2026-05-17T02:29:22.7211506-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "ready",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Ready.",
+                           "Timestamp":  "2026-05-17T02:29:22.7221514-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "container states",
+                           "Status":  "PASS",
+                           "Message":  "No obvious waiting/terminated container states detected.",
+                           "Timestamp":  "2026-05-17T02:29:22.7291520-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "targetPort metadata",
+                           "Status":  "PASS",
+                           "Message":  "Service named targetPort \u0027web\u0027 resolves to declared container port(s): web-57d87d657b-lt2sj/web:web=8080",
+                           "Timestamp":  "2026-05-17T02:29:22.7421568-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "ready addresses",
+                           "Status":  "PASS",
+                           "Message":  "Ready endpoint IPs: 10.244.1.63",
+                           "Timestamp":  "2026-05-17T02:29:22.8150991-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint ports",
+                           "Status":  "INFO",
+                           "Message":  "EndpointSlice port(s): http=8080/TCP",
+                           "Timestamp":  "2026-05-17T02:29:22.8187268-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint port match",
+                           "Status":  "PASS",
+                           "Message":  "EndpointSlice port(s) 8080 match one of the expected service/target candidate port(s): 80, 8080.",
+                           "Timestamp":  "2026-05-17T02:29:22.8257312-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "target policies",
+                           "Status":  "INFO",
+                           "Message":  "No native Kubernetes NetworkPolicy objects found in namespace \u0027app\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:22.8944087-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "source policies",
+                           "Status":  "INFO",
+                           "Message":  "No native Kubernetes NetworkPolicy objects found in namespace \u0027client-dev\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:22.9594319-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Ingress Layer",
+                           "Check":  "routes",
+                           "Status":  "INFO",
+                           "Message":  "No Ingress routes in namespace \u0027app\u0027 point at service \u0027web\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:23.0277742-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Debug Pod",
+                           "Check":  "debug pod",
+                           "Status":  "SKIP",
+                           "Message":  "Debug pod creation is disabled by default. Add -UseDebugPod or provide a source workload pod for exec-based path checks.",
+                           "Timestamp":  "2026-05-17T02:29:23.0288109-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod selected",
+                           "Status":  "INFO",
+                           "Message":  "Using source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027 selected by \u0027app=client-nodelocal\u0027 for source-to-target checks.",
+                           "Timestamp":  "2026-05-17T02:29:23.1003262-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod MTU",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod MTU(s): lo=65536, tunl0=1480, eth0=1500",
+                           "Timestamp":  "2026-05-17T02:29:23.2054065-05:00",
+                           "Data":  "1: lo: \u003cLOOPBACK,UP,LOWER_UP\u003e mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\r\n2: tunl0@NONE: \u003cNOARP\u003e mtu 1480 qdisc noop state DOWN mode DEFAULT group default qlen 1000\\    link/ipip 0.0.0.0 brd 0.0.0.0\r\n19: eth0@if20: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1500 qdisc noqueue state UP mode DEFAULT group default \\    link/ether 9e:33:06:6d:3e:f4 brd ff:ff:ff:ff:ff:ff link-netnsid 0"
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod routes",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod routes: default via 10.244.3.243 dev eth0 mtu 1450 ; 10.244.3.243 dev eth0 scope link",
+                           "Timestamp":  "2026-05-17T02:29:23.2935220-05:00",
+                           "Data":  "default via 10.244.3.243 dev eth0 mtu 1450 \r\n10.244.3.243 dev eth0 scope link"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "source resolv.conf",
+                           "Status":  "PASS",
+                           "Message":  "Runtime nameserver(s): 169.254.20.10; search domains: client-dev.svc.cluster.local, svc.cluster.local, cluster.local",
+                           "Timestamp":  "2026-05-17T02:29:23.3870619-05:00",
+                           "Data":  "search client-dev.svc.cluster.local svc.cluster.local cluster.local\r\nnameserver 169.254.20.10"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "dns egress policy",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027. DNS egress is not isolated by Kubernetes NetworkPolicy.",
+                           "Timestamp":  "2026-05-17T02:29:23.3901365-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "source egress to target",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:23.3971332-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "target ingress from source",
+                           "Status":  "PASS",
+                           "Message":  "No ingress NetworkPolicies select the target pods.",
+                           "Timestamp":  "2026-05-17T02:29:23.3981346-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium DNS egress resolver",
+                           "Status":  "FAIL",
+                           "Message":  "Cilium egress policy selects source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027, but runtime DNS resolver(s) are not allowed. Resolver 169.254.20.10 (NodeLocalDNS/link-local) is not obviously allowed by Cilium egress policy selecting \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027. Selecting policy/policies: client-dev/dns-to-coredns-only.",
+                           "Timestamp":  "2026-05-17T02:29:24.2634896-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium explicit deny",
+                           "Status":  "PASS",
+                           "Message":  "No Cilium ingressDeny/egressDeny rule obviously matches this path.",
+                           "Timestamp":  "2026-05-17T02:29:24.2650494-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium egress allow",
+                           "Status":  "PASS",
+                           "Message":  "Cilium egress policy appears to allow this target/port through: client-dev/dns-to-coredns-only egress.",
+                           "Timestamp":  "2026-05-17T02:29:24.2660855-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium ingress isolation",
+                           "Status":  "INFO",
+                           "Message":  "No Cilium ingress default-deny policy was inferred for the target pod(s).",
+                           "Timestamp":  "2026-05-17T02:29:24.2671236-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Combined Policy Summary",
+                           "Check":  "effective policy interpretation",
+                           "Status":  "FAIL",
+                           "Message":  "Combined policy result: blocked or likely blocked. native Kubernetes NetworkPolicy does not appear to block this path; CNI-specific policy blocks or likely blocks this path.",
+                           "Timestamp":  "2026-05-17T02:29:24.2756515-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "port candidates",
+                           "Status":  "INFO",
+                           "Message":  "Testing direct pod port(s) 8080 based on service named targetPort \u0027web\u0027 resolves to declared container port.",
+                           "Timestamp":  "2026-05-17T02:29:24.2836517-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "source pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027 to web-57d87d657b-lt2sj:8080",
+                           "Status":  "PASS",
+                           "Message":  "http://10.244.1.63:8080/ reachable. HTTP status: 200",
+                           "Timestamp":  "2026-05-17T02:29:24.3853929-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod resolve target FQDN",
+                           "Status":  "FAIL",
+                           "Message":  "Source pod path in namespace \u0027client-dev\u0027 could not resolve \u0027web.app.svc.cluster.local\u0027 using pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:39.8980106-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod curl target FQDN",
+                           "Status":  "FAIL",
+                           "Message":  "http://web.app.svc.cluster.local:80/ failed from source pod path using pod \u0027client-nodelocal-c7f69c8b8-8s4m4\u0027 in namespace \u0027client-dev\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:45.0279989-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "NodePort And Host Layer",
+                           "Check":  "nodeport",
+                           "Status":  "SKIP",
+                           "Message":  "Service type is not NodePort/LoadBalancer.",
+                           "Timestamp":  "2026-05-17T02:29:45.0299984-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "target warnings",
+                           "Status":  "PASS",
+                           "Message":  "No recent Warning events found in namespace \u0027app\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:45.1010935-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "source warnings",
+                           "Status":  "PASS",
+                           "Message":  "No recent Warning events found in namespace \u0027client-dev\u0027.",
+                           "Timestamp":  "2026-05-17T02:29:45.1763823-05:00",
+                           "Data":  null
+                       }
+                   ],
+    "ExitCode":  1
+}

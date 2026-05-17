@@ -16,11 +16,11 @@ Why can't this pod/app reach that Service?
 - Service selector, port, `targetPort`, and container port metadata
 - EndpointSlice readiness and endpoint-to-pod mapping
 - basic static Ingress references to the target Service, including `spec.defaultBackend`
-- source pod DNS resolver data when a source pod can be used
+- source pod runtime DNS resolver data when a source pod can be used
 - source pod to target Service FQDN
 - source pod to target pod IP
 - native Kubernetes NetworkPolicy source egress and target ingress
-- Calico/Cilium policy hints when provider CRDs are present and readable
+- Calico/Cilium policy analysis when provider CRDs are present and readable, including runtime DNS resolver policy checks
 - NodePort/host reachability for NodePort/LoadBalancer Services unless skipped
 - recent Warning events in target/source namespaces
 

@@ -24,8 +24,6 @@ Native Kubernetes NetworkPolicy is additive allow-list behavior. There is no exp
 
 ## Calico
 
-Calico currently has the deeper provider-specific analyzer.
-
 KubeNetMods can inspect:
 
 - Calico `NetworkPolicy`
@@ -35,6 +33,7 @@ KubeNetMods can inspect:
 - `Allow`, `Deny`, `Pass`, and `Log` actions
 - source egress default-deny and target ingress default-deny
 - missing DNS egress allow hints
+- runtime DNS resolver checks, including CoreDNS service IP and NodeLocalDNS/link-local resolver paths
 - namespace selectors, pod selectors, and common selector operators
 - numeric ports, named ports, port ranges, and protocol matching
 - `notSelector`, `notPorts`, `nets`, `notNets`
@@ -46,23 +45,27 @@ Calico analysis is heuristic. It does not fully emulate workload profiles after 
 
 ## Cilium
 
-Cilium analysis is currently shallower than Calico.
-
 KubeNetMods can inspect:
 
 - `CiliumNetworkPolicy`
 - `CiliumClusterwideNetworkPolicy`
 - `endpointSelector`
 - `toEndpoints` and `fromEndpoints`
-- basic namespace-label matching
+- namespace labels, pod labels, service-account labels, and common `matchExpressions`
 - `egressDeny` and `ingressDeny`
+- explicit deny priority over allow rules
 - source egress default-deny and target ingress default-deny
-- target port matching through `toPorts`
+- numeric ports, named ports, and protocol matching through `toPorts`
 - common DNS egress allow hints
+- runtime DNS resolver checks, including CoreDNS service IP and NodeLocalDNS/link-local resolver paths
 - simple `toEntities` / `fromEntities` cases such as `all` and `cluster`
-- basic `toCIDR` / `fromCIDR` matches against target/source IPs
+- `toCIDR`, `fromCIDR`, `toCIDRSet`, and `fromCIDRSet` matches against target/source IPs, including common `except` handling
+- `toServices` with `k8sService` and `k8sServiceSelector`
+- `toRequires` / `fromRequires` as additional peer constraints
+- L7/TLS/server-name constraint detection when an L4 path appears allowed but application traffic still fails
+- advanced selector visibility for items such as `toFQDNs` and `toGroups`
 
-Cilium analysis does not fully emulate Cilium identity resolution, FQDN policies, service-aware policy behavior, L7 HTTP/Kafka/DNS policy, `toServices`, `toGroups`, advanced entities, every selector form, eBPF dataplane state, or Hubble flow history.
+Cilium analysis is heuristic. It does not fully emulate Cilium identity resolution, dynamic FQDN policy resolution, every entity, every selector form, service-aware implementation detail, exact L7 HTTP/Kafka/DNS policy behavior, eBPF dataplane state, or Hubble flow history.
 
 ## Important Boundary
 

@@ -141,8 +141,9 @@ function Get-KubeNetFinalDiagnoses {
     $hasTargetPortRoot = @($items | Where-Object { $_ -match 'Service targetPort .*does not match|service targetPort and pod port naming' }).Count -gt 0
     $hasPrimaryTargetPortRoot = @($items | Where-Object { $_ -match '^Primary issue: .*targetPort' }).Count -gt 0
     $hasNamedTargetPortRoot = @($items | Where-Object { $_ -match "uses named targetPort" }).Count -gt 0
-    $hasExplicitCniDenyRoot = @($items | Where-Object { $_ -match 'explicit (Deny|deny) policy appears to block|Calico policy denies|Calico first matching action is Deny' }).Count -gt 0
-    $hasCniDefaultDenyRoot = @($items | Where-Object { $_ -match 'Cilium .*default-deny|Calico .*default-deny|CNI .*default-deny' }).Count -gt 0
+    $hasExplicitCniDenyRoot = @($items | Where-Object { $_ -match 'explicit (Deny|deny) policy appears to block|Cilium explicit deny blocks|Calico policy denies|Calico first matching action is Deny' }).Count -gt 0
+    $hasCniDefaultDenyRoot = @($items | Where-Object { $_ -match 'Cilium .*default-deny|Cilium (egress|ingress) policy does not allow|Calico .*default-deny|Calico (egress|ingress) policy does not allow|CNI .*default-deny' }).Count -gt 0
+    $hasCniL7Root = @($items | Where-Object { $_ -match 'Cilium L4 policy (appears to allow|allows) this path.*L7' }).Count -gt 0
     $hasSpecificPathPolicyRoot = @($items | Where-Object { $_ -match 'source egress NetworkPolicy may block traffic|target ingress NetworkPolicy may block traffic' }).Count -gt 0
     $hasMissingEndpointsRoot = @($items | Where-Object { $_ -match 'no ready endpoints|service has no ready endpoints' }).Count -gt 0
     $hasSelectorRoot = @($items | Where-Object { $_ -match 'No pods matched the selector' }).Count -gt 0
@@ -173,6 +174,8 @@ function Get-KubeNetFinalDiagnoses {
         if ($hasCniDefaultDenyRoot -and $item -match "cannot reach optional egress target") { continue }
         if ($hasCniDefaultDenyRoot -and $item -match 'Source-to-target service connection failed') { continue }
         if ($hasCniDefaultDenyRoot -and $item -match 'Egress test to') { continue }
+        if ($hasCniL7Root -and $item -match 'Direct pod IP connectivity failed') { continue }
+        if ($hasCniL7Root -and $item -match 'Source-to-target service connection failed') { continue }
         if ($hasTargetPortRoot -and $item -match 'NetworkPolicy may block traffic') { continue }
         if ($hasPrimaryTargetPortRoot -and $item -match 'EndpointSlice addresses exist') { continue }
         if ($hasNamedTargetPortRoot -and $item -match 'target pods are reachable directly') { continue }

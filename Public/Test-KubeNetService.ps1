@@ -172,7 +172,11 @@ function Test-KubeNetService {
                 [PSCustomObject]@{ Name = 'kube-proxy'; Items = $proxyPods; Hint = 'service routing' }
             )) {
                 if ($tuple.Items.Count -eq 0) {
-                    Add-KubeNetResult -State $state -Layer 'Cluster Health' -Check $tuple.Name -Status 'WARN' -Message "No obvious $($tuple.Name) pod found in kube-system. This may be normal for some managed/CNI-specific clusters."
+                    if ($tuple.Name -eq 'kube-proxy' -and $cniProviderGuess -eq 'Cilium') {
+                        Add-KubeNetResult -State $state -Layer 'Cluster Health' -Check $tuple.Name -Status 'INFO' -Message 'No obvious kube-proxy pod found in kube-system. Cilium was detected and may be running kube-proxy replacement for service routing.'
+                    } else {
+                        Add-KubeNetResult -State $state -Layer 'Cluster Health' -Check $tuple.Name -Status 'WARN' -Message "No obvious $($tuple.Name) pod found in kube-system. This may be normal for some managed/CNI-specific clusters."
+                    }
                 } else {
                     $ready = @($tuple.Items | Where-Object { Get-KubeNetPodReady -Pod $_ })
                     if ($ready.Count -eq $tuple.Items.Count) {

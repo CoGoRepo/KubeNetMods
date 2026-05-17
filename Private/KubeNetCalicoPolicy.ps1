@@ -541,6 +541,12 @@ function Test-KubeNetCalicoRuleMatchesDnsResolver {
     [PSCustomObject]@{ Matches = $false; Reason = "$($resolver.Kind) resolver $Nameserver did not match destination criteria: $($entity.Reason)" }
 }
 
+function New-KubeNetCalicoDiagnosisBlock {
+    param([string[]]$Lines)
+
+    (@($Lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n")
+}
+
 function Test-KubeNetCalicoDnsEgressPolicy {
     param(
         [object[]]$Policies,
@@ -623,10 +629,23 @@ function Test-KubeNetCalicoDnsEgressPolicy {
 
     if ($blockedResolvers.Count -gt 0) {
         $results += [PSCustomObject]@{ Check = 'Calico DNS egress resolver'; Status = 'FAIL'; Message = "Calico egress policy selects source pod '$($SourcePod.metadata.name)', but runtime DNS resolver(s) are not allowed. $($resolverMessages -join ' ') Selecting policy/policies: $($policyNames -join ', ')." }
+        $resolverLine = $blockedResolvers -join ', '
         if (($blockedResolvers -join ' ') -match 'NodeLocalDNS') {
-            $diagnoses += "Primary issue: Calico egress policy blocks DNS from '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)' to its NodeLocalDNS/link-local runtime resolver(s) $($blockedResolvers -join ', '). Add UDP/TCP 53 egress to the NodeLocalDNS/link-local resolver IP, or adjust the DNS policy/path."
+            $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+                'Primary issue: Calico egress policy does not allow the source pod runtime DNS resolver.',
+                ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+                ('Runtime resolver(s): `{0}`' -f $resolverLine),
+                ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+                'Why it failed: DNS policy appears to allow a different DNS path, but this pod is configured to query a NodeLocalDNS/link-local resolver instead.'
+            )
         } else {
-            $diagnoses += "Primary issue: Calico egress policy blocks DNS from '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)' to runtime resolver(s) $($blockedResolvers -join ', '). Policies: $($policyNames -join ', ')."
+            $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+                'Primary issue: Calico egress policy may block DNS for the source pod.',
+                ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+                ('Runtime resolver(s): `{0}`' -f $resolverLine),
+                ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+                'Why it failed: No Calico Allow/Pass rule obviously matches the pod runtime resolver on UDP/TCP 53.'
+            )
         }
         return [PSCustomObject]@{ Results = $results; Diagnoses = $diagnoses; AnyDnsAllow = $anyAllow; AnyBlocked = $true }
     }
@@ -768,7 +787,13 @@ function Test-KubeNetCalicoPolicyPath {
     if ($firstMatch) {
         if ($firstMatch.Action -eq 'Deny') {
             $results += [PSCustomObject]@{ Check = 'Calico target path first matching action'; Status = 'FAIL'; Message = "For the target service path, first matching Calico action is Deny: $($firstMatch.Policy) $($firstMatch.Direction) in tier '$($firstMatch.Tier)' (reason: $($firstMatch.Reason))." }
-            $diagnoses += "Primary issue: Calico policy denies '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)' to service '$($TargetNamespace.metadata.name)/$($Service.metadata.name)'. First match: $($firstMatch.Policy) $($firstMatch.Direction) Deny in tier '$($firstMatch.Tier)'."
+            $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+                'Primary issue: Calico policy denies this source-to-service path.',
+                ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+                ('Target Service: `{0}/{1}`' -f $TargetNamespace.metadata.name, $Service.metadata.name),
+                ('First match: `{0} {1} Deny` in tier `{2}`' -f $firstMatch.Policy, $firstMatch.Direction, $firstMatch.Tier),
+                ('Why it failed: {0}' -f $firstMatch.Reason)
+            )
         } elseif ($firstMatch.Action -eq 'Allow') {
             $results += [PSCustomObject]@{ Check = 'Calico target path first matching action'; Status = 'PASS'; Message = "For the target service path, first matching Calico action is Allow: $($firstMatch.Policy) $($firstMatch.Direction) in tier '$($firstMatch.Tier)' (reason: $($firstMatch.Reason))." }
             $laterDenies = @($orderedMatches | Where-Object { $_.Action -eq 'Deny' -and ($_.TierOrder -gt $firstMatch.TierOrder -or ($_.TierOrder -eq $firstMatch.TierOrder -and ($_.PolicyOrder -gt $firstMatch.PolicyOrder -or ($_.PolicyOrder -eq $firstMatch.PolicyOrder -and $_.RuleIndex -gt $firstMatch.RuleIndex)))) })
@@ -782,11 +807,23 @@ function Test-KubeNetCalicoPolicyPath {
     if (-not $firstMatch -and $sourceEgressEnforcing.Count -gt 0) {
         $policyNames = @($sourceEgressEnforcing | Sort-Object -Unique)
         $results += [PSCustomObject]@{ Check = 'Calico target path egress default-deny'; Status = 'FAIL'; Message = "Calico policy selects source pod '$($SourcePod.metadata.name)' for egress, but no Calico Allow/Pass rule obviously matches the target service path/port. Selecting policy/policies: $($policyNames -join ', ')." }
-        $diagnoses += "Primary issue: Calico policy selects source pod '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)' for egress default-deny, but no egress Allow rule obviously permits service '$($TargetNamespace.metadata.name)/$($Service.metadata.name)'. Policies: $($policyNames -join ', ')."
+        $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+            'Primary issue: Calico egress policy does not allow the tested target Service.',
+            ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+            ('Target Service: `{0}/{1}`' -f $TargetNamespace.metadata.name, $Service.metadata.name),
+            ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+            'Why it failed: the source pod is egress-isolated by Calico policy, but no Allow/Pass rule obviously matches the tested Service path.'
+        )
     } elseif (-not $firstMatch -and $targetIngressEnforcing.Count -gt 0) {
         $policyNames = @($targetIngressEnforcing | Sort-Object -Unique)
         $results += [PSCustomObject]@{ Check = 'Calico target path ingress default-deny'; Status = 'FAIL'; Message = "Calico policy selects target pod(s) for ingress, but no Calico Allow/Pass rule obviously matches this source/target service port. Selecting policy/policies: $($policyNames -join ', ')." }
-        $diagnoses += "Primary issue: Calico policy selects target service pods in '$($TargetNamespace.metadata.name)' for ingress default-deny, but no ingress Allow rule obviously permits source pod '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)'. Policies: $($policyNames -join ', ')."
+        $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+            'Primary issue: Calico ingress policy does not allow this source.',
+            ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+            ('Target Service: `{0}/{1}`' -f $TargetNamespace.metadata.name, $Service.metadata.name),
+            ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+            'Why it failed: the target pods are ingress-isolated by Calico policy, but no Allow/Pass rule obviously matches this source and Service port.'
+        )
     }
 
     $dnsResolverAnalysis = Test-KubeNetCalicoDnsEgressPolicy -Policies $enforcedPolicies -NetworkSets $NetworkSets -Tiers $Tiers -SourcePod $SourcePod -ResolvSummary $SourceResolvSummary -CoreDnsPods $CoreDnsPods -NodeLocalDnsPods $NodeLocalDnsPods -KubeSystemNamespace $KubeSystemNamespace -CoreDnsServiceIp $CoreDnsServiceIp
@@ -798,7 +835,12 @@ function Test-KubeNetCalicoPolicyPath {
         $status = if ($firstMatch -and $firstMatch.Action -eq 'Allow') { 'WARN' } else { 'INFO' }
         $results += [PSCustomObject]@{ Check = 'Calico DNS egress allow'; Status = $status; Message = "Calico policy selects source pod '$($SourcePod.metadata.name)' for egress, and no obvious DNS egress allow rule was found. DNS lookups may fail even if the target service is allowed. Selecting policy/policies: $($policyNames -join ', ')." }
         if ($status -eq 'WARN') {
-            $diagnoses += "Likely issue: Calico egress default-deny may block DNS from '$($SourcePod.metadata.namespace)/$($SourcePod.metadata.name)'. Add UDP/TCP 53 egress to CoreDNS/NodeLocalDNS or add an appropriate DNS allow policy. Policies: $($policyNames -join ', ')."
+            $diagnoses += New-KubeNetCalicoDiagnosisBlock -Lines @(
+                'Likely issue: Calico egress policy may block DNS for the source pod.',
+                ('Source: `{0}/{1}`' -f $SourcePod.metadata.namespace, $SourcePod.metadata.name),
+                ('Policy/policies: `{0}`' -f ($policyNames -join ', ')),
+                'Why it may fail: target traffic appears allowed, but no obvious DNS egress Allow/Pass rule was found.'
+            )
         }
     }
 

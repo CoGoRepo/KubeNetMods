@@ -78,7 +78,7 @@ function Test-KubeNetCniSpecificPolicyPath {
     $ciliumPolicies += Get-KubeNetOptionalJsonList -State $State -Context $Context -Arguments @('get', 'ciliumnetworkpolicies.cilium.io', '-A', '-o', 'json')
     $ciliumPolicies += Get-KubeNetOptionalJsonList -State $State -Context $Context -Arguments @('get', 'ciliumclusterwidenetworkpolicies.cilium.io', '-o', 'json')
     if ($ciliumPolicies.Count -gt 0 -or $CniProviderGuess -match 'Cilium') {
-        $cilium = Test-KubeNetCiliumPolicyPath -Policies $ciliumPolicies -SourcePod $SourcePod -SourceNamespace $SourceNamespace -TargetPods $TargetPods -TargetNamespace $TargetNamespace -Service $Service -Ports $ports
+        $cilium = Test-KubeNetCiliumPolicyPath -Policies $ciliumPolicies -SourcePod $SourcePod -SourceNamespace $SourceNamespace -TargetPods $TargetPods -TargetNamespace $TargetNamespace -Service $Service -Ports $ports -ServicePortObject $ServicePortObject -ContainerPorts $ContainerPorts -SourceResolvSummary $SourceResolvSummary -CoreDnsPods $CoreDnsPods -NodeLocalDnsPods $NodeLocalDnsPods -KubeSystemNamespace $KubeSystemNamespace -CoreDnsServiceIp $CoreDnsServiceIp
         $results += @($cilium.Results)
         $diagnoses += @($cilium.Diagnoses)
     }
@@ -104,9 +104,12 @@ function Test-KubeNetCniSpecificPolicyPath {
 
     $summary = 'No CNI-specific policy decision was inferred.'
     $fail = @($results | Where-Object { $_.Status -eq 'FAIL' } | Select-Object -First 1)
+    $l7 = @($results | Where-Object { $_.Status -eq 'WARN' -and $_.Check -match 'L7 policy constraints' } | Select-Object -First 1)
     $pass = @($results | Where-Object { $_.Status -eq 'PASS' -and $_.Check -match 'first matching|explicit deny|policy path' } | Select-Object -First 1)
     if ($fail.Count -gt 0) {
         $summary = "CNI-specific policy result: blocked or likely blocked. $($fail[0].Message)"
+    } elseif ($l7.Count -gt 0) {
+        $summary = "CNI-specific policy result: L4 path appears allowed, but L7 policy constraints are present. $($l7[0].Message)"
     } elseif ($pass.Count -gt 0) {
         $summary = "CNI-specific policy result: no CNI block inferred. $($pass[0].Message)"
     } elseif ($results.Count -gt 0) {

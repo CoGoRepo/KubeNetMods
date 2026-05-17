@@ -76,10 +76,10 @@ KubeNetMods can inspect:
 - cluster and namespace access
 - node readiness and common node network/pressure conditions
 - Service selectors, ports, `targetPort`, EndpointSlices, and backend pod readiness
-- source pod DNS resolver data and source-to-service DNS
+- source pod runtime DNS resolver data and source-to-service DNS
 - source pod to target Service and target pod IP reachability
 - native Kubernetes NetworkPolicy source egress and target ingress
-- Calico/Cilium policy hints when CRDs are present and readable
+- Calico/Cilium policy analysis when provider CRDs are present and readable, including runtime DNS resolver policy checks
 - Ingress objects, `defaultBackend`, backend ports, TLS secrets, IngressClass, annotations, and controller hints
 - NodePort and LoadBalancer shape/reachability
 - pod-side MTU/route snapshots when exec is available

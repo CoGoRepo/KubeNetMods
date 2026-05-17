@@ -1,0 +1,408 @@
+﻿{
+    "Target":  {
+                   "UrlScheme":  "http",
+                   "Context":  "kind-knm-cilium-policy",
+                   "SourceDebugPodName":  "kubenetmods-source-debug",
+                   "UseDebugPod":  false,
+                   "TargetPort":  80,
+                   "SourceNamespace":  "knm-cil-source",
+                   "TargetDebugPodName":  "kubenetmods-debug",
+                   "Timestamp":  "2026-05-16T22:41:19.6708013-05:00",
+                   "TargetService":  "web",
+                   "KubeCommand":  "C:\\Program Files\\Docker\\Docker\\resources\\bin\\kubectl.exe",
+                   "UrlPath":  "/",
+                   "SourceContext":  "kind-knm-cilium-policy",
+                   "Deployment":  "web",
+                   "TargetOnly":  false,
+                   "DebugImagePullPolicy":  "IfNotPresent",
+                   "TargetNamespace":  "knm-cil-target",
+                   "DebugImage":  "nicolaka/netshoot:latest",
+                   "Command":  "Test-KubeNetService"
+               },
+    "Diagnoses":  [
+
+                  ],
+    "StatusSummary":  [
+                          {
+                              "Status":  "INFO",
+                              "Count":  13
+                          },
+                          {
+                              "Status":  "PASS",
+                              "Count":  30
+                          },
+                          {
+                              "Status":  "SKIP",
+                              "Count":  2
+                          }
+                      ],
+    "Failures":  [
+
+                 ],
+    "Warnings":  [
+
+                 ],
+    "RawResults":  [
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "kubectl",
+                           "Status":  "PASS",
+                           "Message":  "kubectl is available.",
+                           "Timestamp":  "2026-05-16T22:41:17.1822489-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "target namespace",
+                           "Status":  "PASS",
+                           "Message":  "Target namespace \u0027knm-cil-target\u0027 exists.",
+                           "Timestamp":  "2026-05-16T22:41:17.2447182-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Access",
+                           "Check":  "source namespace",
+                           "Status":  "PASS",
+                           "Message":  "Source namespace \u0027knm-cil-source\u0027 exists.",
+                           "Timestamp":  "2026-05-16T22:41:17.3042549-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node readiness",
+                           "Status":  "PASS",
+                           "Message":  "3/3 node(s) are Ready.",
+                           "Timestamp":  "2026-05-16T22:41:17.3840306-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "node conditions",
+                           "Status":  "PASS",
+                           "Message":  "No NetworkUnavailable/pressure node conditions detected.",
+                           "Timestamp":  "2026-05-16T22:41:17.3840306-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS service",
+                           "Status":  "INFO",
+                           "Message":  "kube-dns service ClusterIP is 10.96.0.10.",
+                           "Timestamp":  "2026-05-16T22:41:17.6659473-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS Corefile",
+                           "Status":  "PASS",
+                           "Message":  "CoreDNS Corefile includes the kubernetes plugin.",
+                           "Timestamp":  "2026-05-16T22:41:17.7298803-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI add-ons",
+                           "Status":  "PASS",
+                           "Message":  "11/11 CNI add-ons pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T22:41:17.7329756-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CNI provider",
+                           "Status":  "INFO",
+                           "Message":  "CNI/provider guess: Cilium.",
+                           "Timestamp":  "2026-05-16T22:41:17.7329756-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "CoreDNS",
+                           "Status":  "PASS",
+                           "Message":  "2/2 CoreDNS pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T22:41:17.7340250-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Cluster Health",
+                           "Check":  "kube-proxy",
+                           "Status":  "INFO",
+                           "Message":  "No obvious kube-proxy pod found in kube-system. Cilium was detected and may be running kube-proxy replacement for service routing.",
+                           "Timestamp":  "2026-05-16T22:41:17.7340250-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Deployment Layer",
+                           "Check":  "replicas",
+                           "Status":  "PASS",
+                           "Message":  "Deployment \u0027web\u0027 has 1/1 available replica(s).",
+                           "Timestamp":  "2026-05-16T22:41:17.7975543-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service exists",
+                           "Status":  "PASS",
+                           "Message":  "Service \u0027web\u0027 exists. Type=ClusterIP; ClusterIP=10.96.88.79; Ports=80-\u003eweb/TCP; Selector=app=web,component=frontend",
+                           "Timestamp":  "2026-05-16T22:41:17.8617788-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "service port",
+                           "Status":  "PASS",
+                           "Message":  "Service port 80 exists on the service.",
+                           "Timestamp":  "2026-05-16T22:41:17.8628172-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pod selector",
+                           "Status":  "INFO",
+                           "Message":  "Using pod selector: app=web,component=frontend",
+                           "Timestamp":  "2026-05-16T22:41:17.9361341-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "pods exist",
+                           "Status":  "PASS",
+                           "Message":  "1 pod(s) found.",
+                           "Timestamp":  "2026-05-16T22:41:17.9371367-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "running",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Running.",
+                           "Timestamp":  "2026-05-16T22:41:17.9371367-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "ready",
+                           "Status":  "PASS",
+                           "Message":  "1/1 pod(s) are Ready.",
+                           "Timestamp":  "2026-05-16T22:41:17.9371367-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod Health Layer",
+                           "Check":  "container states",
+                           "Status":  "PASS",
+                           "Message":  "No obvious waiting/terminated container states detected.",
+                           "Timestamp":  "2026-05-16T22:41:17.9381360-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Service Layer",
+                           "Check":  "targetPort metadata",
+                           "Status":  "PASS",
+                           "Message":  "Service named targetPort \u0027web\u0027 resolves to declared container port(s): web-57d87d657b-pptxv/web:web=8080",
+                           "Timestamp":  "2026-05-16T22:41:17.9381360-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "ready addresses",
+                           "Status":  "PASS",
+                           "Message":  "Ready endpoint IPs: 10.244.3.57",
+                           "Timestamp":  "2026-05-16T22:41:18.0027907-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint ports",
+                           "Status":  "INFO",
+                           "Message":  "EndpointSlice port(s): http=8080/TCP",
+                           "Timestamp":  "2026-05-16T22:41:18.0033323-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "EndpointSlice Layer",
+                           "Check":  "endpoint port match",
+                           "Status":  "PASS",
+                           "Message":  "EndpointSlice port(s) 8080 match one of the expected service/target candidate port(s): 80, 8080.",
+                           "Timestamp":  "2026-05-16T22:41:18.0038524-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "target policies",
+                           "Status":  "INFO",
+                           "Message":  "No native Kubernetes NetworkPolicy objects found in namespace \u0027knm-cil-target\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:18.0658889-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Layer",
+                           "Check":  "source policies",
+                           "Status":  "INFO",
+                           "Message":  "No native Kubernetes NetworkPolicy objects found in namespace \u0027knm-cil-source\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:18.1330537-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Ingress Layer",
+                           "Check":  "routes",
+                           "Status":  "INFO",
+                           "Message":  "No Ingress routes in namespace \u0027knm-cil-target\u0027 point at service \u0027web\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:18.1957130-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Debug Pod",
+                           "Check":  "debug pod",
+                           "Status":  "SKIP",
+                           "Message":  "Debug pod creation is disabled by default. Add -UseDebugPod or provide a source workload pod for exec-based path checks.",
+                           "Timestamp":  "2026-05-16T22:41:18.1957130-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod selected",
+                           "Status":  "INFO",
+                           "Message":  "Using source pod \u0027client-55d9bd6876-sdnt5\u0027 selected by \u0027app=client\u0027 for source-to-target checks.",
+                           "Timestamp":  "2026-05-16T22:41:18.2625382-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod MTU",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod MTU(s): lo=65536, tunl0=1480, eth0=1500",
+                           "Timestamp":  "2026-05-16T22:41:18.3479082-05:00",
+                           "Data":  "1: lo: \u003cLOOPBACK,UP,LOWER_UP\u003e mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\r\n2: tunl0@NONE: \u003cNOARP\u003e mtu 1480 qdisc noop state DOWN mode DEFAULT group default qlen 1000\\    link/ipip 0.0.0.0 brd 0.0.0.0\r\n9: eth0@if10: \u003cBROADCAST,MULTICAST,UP,LOWER_UP\u003e mtu 1500 qdisc noqueue state UP mode DEFAULT group default \\    link/ether f6:c8:9d:19:b5:cf brd ff:ff:ff:ff:ff:ff link-netnsid 0"
+                       },
+                       {
+                           "Layer":  "MTU Snapshot Layer",
+                           "Check":  "source pod routes",
+                           "Status":  "INFO",
+                           "Message":  "Source exec pod routes: default via 10.244.1.113 dev eth0 mtu 1450 ; 10.244.1.113 dev eth0 scope link",
+                           "Timestamp":  "2026-05-16T22:41:18.4355245-05:00",
+                           "Data":  "default via 10.244.1.113 dev eth0 mtu 1450 \r\n10.244.1.113 dev eth0 scope link"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "source resolv.conf",
+                           "Status":  "PASS",
+                           "Message":  "Runtime nameserver(s): 10.96.0.10; search domains: knm-cil-source.svc.cluster.local, svc.cluster.local, cluster.local",
+                           "Timestamp":  "2026-05-16T22:41:18.5229135-05:00",
+                           "Data":  "search knm-cil-source.svc.cluster.local svc.cluster.local cluster.local\r\nnameserver 10.96.0.10\r\noptions ndots:5"
+                       },
+                       {
+                           "Layer":  "Source DNS Policy Layer",
+                           "Check":  "dns egress policy",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027client-55d9bd6876-sdnt5\u0027. DNS egress is not isolated by Kubernetes NetworkPolicy.",
+                           "Timestamp":  "2026-05-16T22:41:18.5234337-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "source egress to target",
+                           "Status":  "PASS",
+                           "Message":  "No egress NetworkPolicies select source pod \u0027client-55d9bd6876-sdnt5\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:18.5239546-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Kubernetes NetworkPolicy Path Analysis",
+                           "Check":  "target ingress from source",
+                           "Status":  "PASS",
+                           "Message":  "No ingress NetworkPolicies select the target pods.",
+                           "Timestamp":  "2026-05-16T22:41:18.5239546-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium explicit deny",
+                           "Status":  "PASS",
+                           "Message":  "No Cilium ingressDeny/egressDeny rule obviously matches this path.",
+                           "Timestamp":  "2026-05-16T22:41:19.2543773-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium egress allow",
+                           "Status":  "PASS",
+                           "Message":  "Cilium egress policy appears to allow this target/port through: knm-cil-source/source-to-service-allow egress.",
+                           "Timestamp":  "2026-05-16T22:41:19.2543773-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "CNI Policy Layer",
+                           "Check":  "Cilium ingress isolation",
+                           "Status":  "INFO",
+                           "Message":  "No Cilium ingress default-deny policy was inferred for the target pod(s).",
+                           "Timestamp":  "2026-05-16T22:41:19.2549022-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Combined Policy Summary",
+                           "Check":  "effective policy interpretation",
+                           "Status":  "PASS",
+                           "Message":  "Combined policy result: no policy block inferred for the tested source-to-target path. Native Kubernetes NetworkPolicy path checks passed or found no isolation; CNI-specific policy result: no CNI block inferred. No Cilium ingressDeny/egressDeny rule obviously matches this path.",
+                           "Timestamp":  "2026-05-16T22:41:19.2549022-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "port candidates",
+                           "Status":  "INFO",
+                           "Message":  "Testing direct pod port(s) 8080 based on service named targetPort \u0027web\u0027 resolves to declared container port.",
+                           "Timestamp":  "2026-05-16T22:41:19.2559416-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Pod-to-Pod Connectivity Layer",
+                           "Check":  "source pod \u0027client-55d9bd6876-sdnt5\u0027 to web-57d87d657b-pptxv:8080",
+                           "Status":  "PASS",
+                           "Message":  "http://10.244.3.57:8080/ reachable. HTTP status: 200",
+                           "Timestamp":  "2026-05-16T22:41:19.3439753-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod resolve target FQDN",
+                           "Status":  "PASS",
+                           "Message":  "Source pod path in namespace \u0027knm-cil-source\u0027 resolved \u0027web.knm-cil-target.svc.cluster.local\u0027 using pod \u0027client-55d9bd6876-sdnt5\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:19.4444144-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Source pod path",
+                           "Check":  "source pod curl target FQDN",
+                           "Status":  "PASS",
+                           "Message":  "http://web.knm-cil-target.svc.cluster.local:80/ reachable from source pod path using pod \u0027client-55d9bd6876-sdnt5\u0027. HTTP status: 200",
+                           "Timestamp":  "2026-05-16T22:41:19.5344220-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "NodePort And Host Layer",
+                           "Check":  "nodeport",
+                           "Status":  "SKIP",
+                           "Message":  "Service type is not NodePort/LoadBalancer.",
+                           "Timestamp":  "2026-05-16T22:41:19.5349396-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "target warnings",
+                           "Status":  "PASS",
+                           "Message":  "No recent Warning events found in namespace \u0027knm-cil-target\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:19.6023141-05:00",
+                           "Data":  null
+                       },
+                       {
+                           "Layer":  "Events Layer",
+                           "Check":  "source warnings",
+                           "Status":  "PASS",
+                           "Message":  "No recent Warning events found in namespace \u0027knm-cil-source\u0027.",
+                           "Timestamp":  "2026-05-16T22:41:19.6697671-05:00",
+                           "Data":  null
+                       }
+                   ],
+    "ExitCode":  0
+}

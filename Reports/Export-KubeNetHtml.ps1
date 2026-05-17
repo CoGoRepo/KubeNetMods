@@ -78,6 +78,7 @@ code { background:#26313d; border-radius:4px; padding:2px 5px; color:#f7fafc; }
 .status-skip { color:var(--skip); }
 .status-info { color:var(--info); }
 li + li { margin-top:8px; }
+.diagnosis li { white-space:pre-line; }
 @media (max-width: 900px) { main { width:min(100vw - 24px, 1260px); } .grid { grid-template-columns:1fr; } }
 </style>
 </head>
