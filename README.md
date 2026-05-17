@@ -124,6 +124,10 @@ kubectl delete pod kubenetmods-ingress-debug -n <namespace> --ignore-not-found
 - Kubernetes RBAC permissions for the objects you want to inspect
 - `pods/exec` permission only for checks that exec into workload/debug pods
 
+## License
+
+KubeNetMods is licensed under the [GNU Affero General Public License v3.0](./LICENSE).
+
 ## Examples
 
 Example reports live in [`examples/reports`](./examples/reports).

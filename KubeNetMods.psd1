@@ -22,6 +22,7 @@
         PSData = @{
             Tags       = @('Kubernetes', 'Networking', 'Troubleshooting', 'kubectl')
             ProjectUri = 'https://github.com/CoGoRepo/KubeNetMods'
+            LicenseUri = 'https://www.gnu.org/licenses/agpl-3.0.html'
         }
     }
 }
