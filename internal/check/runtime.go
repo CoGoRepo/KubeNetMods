@@ -44,6 +44,9 @@ func selectReadyPod(pods []corev1.Pod) *corev1.Pod {
 }
 
 func buildServiceURLs(service *corev1.Service, namespace, name, scheme, path string, port int32) []string {
+	if service == nil {
+		return nil
+	}
 	if scheme == "" {
 		scheme = "http"
 	}
@@ -55,6 +58,12 @@ func buildServiceURLs(service *corev1.Service, namespace, name, scheme, path str
 	}
 	if port == 0 && len(service.Spec.Ports) > 0 {
 		port = service.Spec.Ports[0].Port
+	}
+	if service.Spec.Type == corev1.ServiceTypeExternalName {
+		if service.Spec.ExternalName == "" {
+			return nil
+		}
+		return []string{fmt.Sprintf("%s://%s:%d%s", scheme, service.Spec.ExternalName, port, path)}
 	}
 	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", name, namespace)
 	out := []string{

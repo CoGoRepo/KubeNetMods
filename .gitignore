@@ -2,6 +2,7 @@
 bin/
 obj/
 *.nupkg
+/dist/
 
 # Generated reports
 /reports/

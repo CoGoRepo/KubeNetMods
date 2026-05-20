@@ -24,26 +24,27 @@ import (
 )
 
 type ServiceOptions struct {
-	Context           string
-	Namespace         string
-	Service           string
-	Deployment        string
-	ServicePort       int32
-	SourceContext     string
-	SourceNamespace   string
-	SourcePodName     string
-	SourcePodSelector string
-	TargetPodSelector string
-	SourceContainer   string
-	URLScheme         string
-	URLPath           string
-	UseDebugPod       bool
-	DebugImage        string
-	DebugPullPolicy   string
-	TargetDebugPod    string
-	SourceDebugPod    string
-	SkipNodePort      bool
-	Timeout           time.Duration
+	Context             string
+	Namespace           string
+	Service             string
+	Deployment          string
+	ServicePort         int32
+	SourceContext       string
+	SourceNamespace     string
+	SourcePodName       string
+	SourcePodSelector   string
+	TargetPodSelector   string
+	SourceContainer     string
+	URLScheme           string
+	URLPath             string
+	UseDebugPod         bool
+	DebugImage          string
+	DebugPullPolicy     string
+	TargetDebugPod      string
+	SourceDebugPod      string
+	SkipNodePort        bool
+	Timeout             time.Duration
+	DeploymentDefaulted bool
 }
 
 func RunService(ctx context.Context, opts ServiceOptions) (*model.Report, error) {
@@ -55,6 +56,7 @@ func RunService(ctx context.Context, opts ServiceOptions) (*model.Report, error)
 	}
 	if opts.Deployment == "" {
 		opts.Deployment = opts.Service
+		opts.DeploymentDefaulted = true
 	}
 	if opts.SourceNamespace == "" {
 		opts.SourceNamespace = opts.Namespace
@@ -109,7 +111,7 @@ func RunService(ctx context.Context, opts ServiceOptions) (*model.Report, error)
 
 	checkCluster(ctx, client, report, opts)
 	service, serviceOK := checkService(ctx, client, report, opts)
-	deployment := checkDeployment(ctx, client, report, opts)
+	deployment := checkDeployment(ctx, client, report, opts, service)
 	pods := checkTargetPods(ctx, client, report, opts, service, deployment)
 	checkEndpoints(ctx, client, report, opts, service, pods)
 	checkTargetPort(report, service, pods, opts)
@@ -229,8 +231,20 @@ func reportAddonHealth(report *model.Report, name string, pods []corev1.Pod, mat
 	}
 }
 
-func checkDeployment(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions) *appsv1.Deployment {
+func checkDeployment(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions, service *corev1.Service) *appsv1.Deployment {
 	layer := "Deployment Layer"
+	if opts.Deployment == "" {
+		report.Add(layer, "deployment", model.StatusSkip, "No deployment name supplied.")
+		return nil
+	}
+	if service != nil && service.Spec.Type == corev1.ServiceTypeExternalName && opts.DeploymentDefaulted {
+		report.Add(layer, "deployment", model.StatusSkip, "Skipped default Deployment lookup because ExternalName Services do not select backend pods.")
+		return nil
+	}
+	if service != nil && len(service.Spec.Selector) == 0 && opts.TargetPodSelector == "" && opts.DeploymentDefaulted {
+		report.Add(layer, "deployment", model.StatusSkip, "Skipped default Deployment lookup because the Service has no selector and no target selector override was supplied.")
+		return nil
+	}
 	deployment, err := client.Core.AppsV1().Deployments(opts.Namespace).Get(ctx, opts.Deployment, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -267,9 +281,13 @@ func checkService(ctx context.Context, client *kube.Client, report *model.Report
 	if len(service.Spec.Selector) > 0 {
 		selector = labels.Set(service.Spec.Selector).String()
 	}
-	report.Add(layer, "service details", model.StatusInfo, fmt.Sprintf("Type=%s; ClusterIP=%s; Ports=%s; Selector=%s", service.Spec.Type, service.Spec.ClusterIP, servicePorts(service), selector))
+	report.Add(layer, "service details", model.StatusInfo, fmt.Sprintf("Type=%s; ClusterIP=%s; ExternalName=%s; Ports=%s; Selector=%s", service.Spec.Type, serviceClusterIPText(service), service.Spec.ExternalName, servicePorts(service), selector))
 	if service.Spec.Type == corev1.ServiceTypeExternalName {
+		report.Add(layer, "service shape", model.StatusInfo, fmt.Sprintf("ExternalName Service points at %q. Runtime checks should treat this as DNS/upstream reachability, not Kubernetes pod backends.", service.Spec.ExternalName))
 		report.Diagnose("The target is an ExternalName Service. Kubernetes EndpointSlice and pod selector checks will not explain upstream DNS/provider reachability.")
+	}
+	if service.Spec.ClusterIP == corev1.ClusterIPNone {
+		report.Add(layer, "service shape", model.StatusInfo, "Headless Service detected. ClusterIP curl is not expected; DNS should return endpoint records.")
 	}
 	if len(service.Spec.Selector) == 0 && service.Spec.Type != corev1.ServiceTypeExternalName {
 		report.Add(layer, "selector", model.StatusWarn, "Service has no selector. EndpointSlice objects must be managed separately.")
@@ -280,6 +298,10 @@ func checkService(ctx context.Context, client *kube.Client, report *model.Report
 
 func checkTargetPods(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions, service *corev1.Service, deployment *appsv1.Deployment) []corev1.Pod {
 	layer := "Pod Health Layer"
+	if service != nil && service.Spec.Type == corev1.ServiceTypeExternalName && opts.TargetPodSelector == "" && deployment == nil {
+		report.Add(layer, "pod selector", model.StatusSkip, "Skipped because ExternalName Services do not select backend pods.")
+		return nil
+	}
 	selector := opts.TargetPodSelector
 	if selector == "" && service != nil && len(service.Spec.Selector) > 0 {
 		selector = labels.Set(service.Spec.Selector).String()
@@ -341,6 +363,10 @@ func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Repo
 		report.Add(layer, "endpoint slices", model.StatusSkip, "Skipped because the target Service was not readable.")
 		return
 	}
+	if service.Spec.Type == corev1.ServiceTypeExternalName {
+		report.Add(layer, "endpoint slices", model.StatusSkip, "Skipped because ExternalName Services do not use Kubernetes EndpointSlices for backend pods.")
+		return
+	}
 	slices, err := client.Core.DiscoveryV1().EndpointSlices(opts.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: discoveryv1.LabelServiceName + "=" + opts.Service,
 	})
@@ -361,7 +387,11 @@ func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Repo
 	if len(readyIPs) == 0 {
 		report.Add(layer, "endpoint slices", model.StatusFail, fmt.Sprintf("No ready EndpointSlice addresses found for Service %q.", opts.Service))
 		if service != nil {
-			report.Diagnose("The Service has no ready endpoints. This usually means selector mismatch, pod readiness failure, or manually managed endpoints are missing.")
+			if len(service.Spec.Selector) == 0 {
+				report.Diagnose("The selectorless Service has no ready EndpointSlices. Manually managed EndpointSlices or external endpoints are missing/unready.")
+			} else {
+				report.Diagnose("The Service has no ready endpoints. This usually means selector mismatch, pod readiness failure, or manually managed endpoints are missing.")
+			}
 		}
 		return
 	}
@@ -401,7 +431,17 @@ func checkTargetPort(report *model.Report, service *corev1.Service, pods []corev
 		return
 	}
 	report.Target.ServicePort = selected.Port
-	report.Add(layer, "selected port", model.StatusInfo, fmt.Sprintf("Testing service port %d with targetPort %s.", selected.Port, selected.TargetPort.String()))
+	report.Add(layer, "selected port", model.StatusInfo, fmt.Sprintf("Testing Service port %s.", describeServicePort(selected)))
+	if selected.Protocol != "" && selected.Protocol != corev1.ProtocolTCP {
+		report.Add(layer, "protocol", model.StatusWarn, fmt.Sprintf("Selected Service port uses %s. Active runtime checks use HTTP/curl and are TCP-oriented, so non-TCP behavior is not fully validated.", selected.Protocol))
+		report.Diagnose(fmt.Sprintf("The selected Service port is %s, but active runtime checks are HTTP/TCP-oriented. Use protocol-specific tooling for full validation.", selected.Protocol))
+	}
+	if service.Spec.ClusterIP == corev1.ClusterIPNone {
+		if headlessTarget, ok := resolvedTargetPort(selected, collectContainerPorts(pods)); ok && headlessTarget != selected.Port {
+			report.Add(layer, "headless port", model.StatusWarn, fmt.Sprintf("Headless Service port %d resolves directly to pod endpoints, but selected targetPort is %d. Without kube-proxy translation, clients may need to use the pod listener/SRV port.", selected.Port, headlessTarget))
+			report.Diagnose(fmt.Sprintf("Headless Service %q maps Service port %d to targetPort %d. Headless DNS returns endpoint addresses directly, so clients using port %d may fail unless pods listen there.", service.Name, selected.Port, headlessTarget, selected.Port))
+		}
+	}
 	if len(pods) == 0 {
 		return
 	}
@@ -411,7 +451,7 @@ func checkTargetPort(report *model.Report, service *corev1.Service, pods []corev
 		return
 	}
 	if targetPortMatches(selected.TargetPort, ports) {
-		report.Add(layer, "targetPort metadata", model.StatusPass, fmt.Sprintf("Service targetPort %s matches declared container port(s).", selected.TargetPort.String()))
+		report.Add(layer, "targetPort metadata", model.StatusPass, fmt.Sprintf("Service targetPort %s matches declared container port(s): %s.", selected.TargetPort.String(), matchingContainerPorts(selected.TargetPort, ports)))
 		return
 	}
 	report.Add(layer, "targetPort metadata", model.StatusWarn, fmt.Sprintf("Service targetPort %s does not match declared container ports: %s.", selected.TargetPort.String(), summarizePorts(ports)))
@@ -459,7 +499,7 @@ func checkNativeNetworkPolicies(ctx context.Context, client *kube.Client, report
 		report.Add(layer, "target namespace labels", model.StatusWarn, fmt.Sprintf("Could not read target namespace labels: %v", err))
 		return
 	}
-	ports := connectionPortCandidates(service, collectContainerPorts(pods))
+	ports := selectedConnectionPortCandidates(service, collectContainerPorts(pods), report.Target.ServicePort)
 	analyzeNativeEgress(report, source.Pod, *targetNamespace, pods, sourcePolicies.Items, service, ports)
 	analyzeNativeIngress(report, source.Pod, *sourceNamespace, pods, *targetNamespace, targetPolicies.Items, service, ports)
 }
@@ -485,7 +525,8 @@ func checkCniPolicies(ctx context.Context, client *kube.Client, report *model.Re
 	if source != nil {
 		sourcePod = &source.Pod
 	}
-	calicoInsights, err := calicopolicy.Analyze(ctx, client, *targetNamespace, pods, sourceNamespace, sourcePod, service, connectionPortCandidates(service, collectContainerPorts(pods)), buildCalicoDNSContext(ctx, client, source))
+	ports := selectedConnectionPortCandidates(service, collectContainerPorts(pods), report.Target.ServicePort)
+	calicoInsights, err := calicopolicy.Analyze(ctx, client, *targetNamespace, pods, sourceNamespace, sourcePod, service, ports, buildCalicoDNSContext(ctx, client, source))
 	if err != nil {
 		report.Add("Calico Policy Layer", "analysis", model.StatusWarn, fmt.Sprintf("Calico policy analysis failed: %v", err))
 	} else {
@@ -500,7 +541,7 @@ func checkCniPolicies(ctx context.Context, client *kube.Client, report *model.Re
 		}
 	}
 
-	ciliumInsights, err := ciliumpolicy.Analyze(ctx, client, opts.Namespace, pods, sourcePod, service, connectionPortCandidates(service, collectContainerPorts(pods)))
+	ciliumInsights, err := ciliumpolicy.Analyze(ctx, client, *targetNamespace, pods, sourceNamespace, sourcePod, service, ports, buildCiliumDNSContext(ctx, client, source))
 	if err != nil {
 		report.Add("Cilium Policy Layer", "analysis", model.StatusWarn, fmt.Sprintf("Cilium policy analysis failed: %v", err))
 	} else {
@@ -538,6 +579,16 @@ func buildCalicoDNSContext(ctx context.Context, client *kube.Client, source *Exe
 		}
 	}
 	return dns
+}
+
+func buildCiliumDNSContext(ctx context.Context, client *kube.Client, source *ExecTarget) ciliumpolicy.DNSContext {
+	calicoDNS := buildCalicoDNSContext(ctx, client, source)
+	return ciliumpolicy.DNSContext{
+		Nameservers:      calicoDNS.Nameservers,
+		CoreDNSServiceIP: calicoDNS.CoreDNSServiceIP,
+		CoreDNSPods:      calicoDNS.CoreDNSPods,
+		NodeLocalDNSPods: calicoDNS.NodeLocalDNSPods,
+	}
 }
 
 func addInsights(report *model.Report, insights []policy.Insight) {
@@ -609,6 +660,15 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 		report.Add("Source-to-Target Runtime Layer", "service path", model.StatusSkip, "Skipped because the target Service was not readable.")
 		return
 	}
+	selected, ok := selectServicePort(service, report.Target.ServicePort)
+	if !ok {
+		report.Add("Source-to-Target Runtime Layer", "service path", model.StatusSkip, "Skipped because the selected Service port was not found.")
+		return
+	}
+	if selected.Protocol != "" && selected.Protocol != corev1.ProtocolTCP {
+		report.Add("Source-to-Target Runtime Layer", "service path", model.StatusSkip, fmt.Sprintf("Skipped HTTP runtime checks because selected Service port %d uses %s, not TCP.", selected.Port, selected.Protocol))
+		return
+	}
 	if source == nil {
 		report.Add("Source-to-Target Runtime Layer", "service path", model.StatusSkip, "Skipped because no executable source pod/debug pod was available.")
 		return
@@ -650,14 +710,17 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %s. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, result.StatusCode))
 		} else {
 			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusFail, fmt.Sprintf("%s %q could not reach %s. %s", source.Kind, source.Pod.Name, rawURL, result.Error))
-			if !hasPolicyPathDiagnosis(report) && !hasDiagnosisContaining(report, "targetPort mismatch") {
+			if !hasPolicyPathDiagnosis(report) &&
+				!hasDiagnosisContaining(report, "targetPort mismatch") &&
+				!hasDiagnosisContaining(report, "Headless Service") &&
+				!(len(service.Spec.Selector) == 0 && service.Spec.Type != corev1.ServiceTypeExternalName) {
 				report.Diagnose(fmt.Sprintf("Source-to-target service connection failed from %q to %q. Check source egress policy, target ingress policy, DNS, service routing, and app listener.", source.Pod.Name, opts.Service))
 			}
 		}
 	}
 
 	podPort := int32(0)
-	directCandidates := directPodPortCandidates(service, collectContainerPorts(targetPods))
+	directCandidates := directPodPortCandidates(service, report.Target.ServicePort, collectContainerPorts(targetPods))
 	if len(directCandidates) > 0 {
 		podPort = directCandidates[0]
 	}
@@ -733,11 +796,15 @@ func normalizedPath(path string) string {
 	return "/" + path
 }
 
-func directPodPortCandidates(service *corev1.Service, ports []containerPort) []int32 {
+func directPodPortCandidates(service *corev1.Service, servicePort int32, ports []containerPort) []int32 {
 	var out []int32
 	seen := map[int32]bool{}
 	if service != nil && len(service.Spec.Ports) > 0 {
-		target := service.Spec.Ports[0].TargetPort
+		selected, ok := selectServicePort(service, servicePort)
+		if !ok {
+			selected = service.Spec.Ports[0]
+		}
+		target := selected.TargetPort
 		for _, port := range ports {
 			if targetPortMatches(target, []containerPort{port}) && !seen[port.Port] {
 				seen[port.Port] = true
@@ -773,14 +840,21 @@ func checkNodePortAndHost(ctx context.Context, client *kube.Client, report *mode
 		report.Add(layer, "nodeport", model.StatusSkip, "Service type is not NodePort/LoadBalancer.")
 		return
 	}
+	selected, ok := selectServicePort(service, report.Target.ServicePort)
+	if !ok {
+		report.Add(layer, "nodeport", model.StatusSkip, "Skipped because the selected Service port was not found.")
+		return
+	}
+	if selected.Protocol != "" && selected.Protocol != corev1.ProtocolTCP {
+		report.Add(layer, "nodeport", model.StatusSkip, fmt.Sprintf("Skipped HTTP NodePort checks because selected Service port %d uses %s, not TCP.", selected.Port, selected.Protocol))
+		return
+	}
 	var nodePorts []int32
-	for _, port := range service.Spec.Ports {
-		if port.NodePort > 0 {
-			nodePorts = append(nodePorts, port.NodePort)
-		}
+	if selected.NodePort > 0 {
+		nodePorts = append(nodePorts, selected.NodePort)
 	}
 	if len(nodePorts) == 0 {
-		report.Add(layer, "nodeport", model.StatusSkip, "No nodePort values were found on the Service.")
+		report.Add(layer, "nodeport", model.StatusSkip, "No nodePort value was found for the selected Service port.")
 		return
 	}
 	nodes, err := client.Core.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -907,9 +981,50 @@ func servicePorts(service *corev1.Service) string {
 		if port.NodePort != 0 {
 			nodePort = fmt.Sprintf(" nodePort=%d", port.NodePort)
 		}
-		ports = append(ports, fmt.Sprintf("%d->%s/%s%s", port.Port, port.TargetPort.String(), port.Protocol, nodePort))
+		name := ""
+		if port.Name != "" {
+			name = " name=" + port.Name
+		}
+		ports = append(ports, fmt.Sprintf("%d->%s/%s%s%s", port.Port, port.TargetPort.String(), port.Protocol, name, nodePort))
 	}
 	return strings.Join(ports, ", ")
+}
+
+func serviceClusterIPText(service *corev1.Service) string {
+	if service == nil {
+		return ""
+	}
+	if service.Spec.ClusterIP == corev1.ClusterIPNone {
+		return "None(headless)"
+	}
+	return service.Spec.ClusterIP
+}
+
+func describeServicePort(port corev1.ServicePort) string {
+	name := port.Name
+	if name == "" {
+		name = "(unnamed)"
+	}
+	nodePort := ""
+	if port.NodePort > 0 {
+		nodePort = fmt.Sprintf("; nodePort=%d", port.NodePort)
+	}
+	return fmt.Sprintf("%d/%s name=%s -> targetPort %s%s", port.Port, port.Protocol, name, port.TargetPort.String(), nodePort)
+}
+
+func resolvedTargetPort(port corev1.ServicePort, ports []containerPort) (int32, bool) {
+	switch port.TargetPort.Type {
+	case intstr.Int:
+		value := int32(port.TargetPort.IntValue())
+		return value, value > 0
+	case intstr.String:
+		for _, candidate := range ports {
+			if candidate.PortName == port.TargetPort.StrVal && candidate.Port > 0 {
+				return candidate.Port, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func selectServicePort(service *corev1.Service, requested int32) (corev1.ServicePort, bool) {
@@ -964,6 +1079,33 @@ func targetPortMatches(target intstr.IntOrString, ports []containerPort) bool {
 		}
 	}
 	return false
+}
+
+func matchingContainerPorts(target intstr.IntOrString, ports []containerPort) string {
+	seen := map[string]bool{}
+	var matches []string
+	for _, port := range ports {
+		if !targetPortMatches(target, []containerPort{port}) {
+			continue
+		}
+		name := port.PortName
+		if name == "" {
+			name = "(unnamed)"
+		}
+		value := fmt.Sprintf("%s/%s:%d/%s name=%s", port.Pod, port.Container, port.Port, port.Protocol, name)
+		if !seen[value] {
+			seen[value] = true
+			matches = append(matches, value)
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return "(none)"
+	}
+	if len(matches) > 4 {
+		return strings.Join(matches[:4], ", ") + fmt.Sprintf(", ... +%d more", len(matches)-4)
+	}
+	return strings.Join(matches, ", ")
 }
 
 func summarizePorts(ports []containerPort) string {
@@ -1179,28 +1321,29 @@ func nativePortsAllow(policyPorts []networkingv1.NetworkPolicyPort, ports []int3
 	return false
 }
 
-func connectionPortCandidates(service *corev1.Service, containerPorts []containerPort) []int32 {
+func selectedConnectionPortCandidates(service *corev1.Service, containerPorts []containerPort, requested int32) []int32 {
+	if service == nil || len(service.Spec.Ports) == 0 {
+		return nil
+	}
+	selected, ok := selectServicePort(service, requested)
+	if !ok {
+		return nil
+	}
 	seen := map[int32]bool{}
 	var out []int32
-	if service != nil {
-		for _, servicePort := range service.Spec.Ports {
-			if servicePort.Port > 0 && !seen[servicePort.Port] {
-				seen[servicePort.Port] = true
-				out = append(out, servicePort.Port)
-			}
-			if servicePort.TargetPort.Type == intstr.Int {
-				value := int32(servicePort.TargetPort.IntValue())
-				if value > 0 && !seen[value] {
-					seen[value] = true
-					out = append(out, value)
-				}
-			} else if servicePort.TargetPort.Type == intstr.String {
-				for _, port := range containerPorts {
-					if port.PortName == servicePort.TargetPort.StrVal && !seen[port.Port] {
-						seen[port.Port] = true
-						out = append(out, port.Port)
-					}
-				}
+	add := func(value int32) {
+		if value > 0 && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	add(selected.Port)
+	if selected.TargetPort.Type == intstr.Int {
+		add(int32(selected.TargetPort.IntValue()))
+	} else if selected.TargetPort.Type == intstr.String {
+		for _, port := range containerPorts {
+			if port.PortName == selected.TargetPort.StrVal {
+				add(port.Port)
 			}
 		}
 	}

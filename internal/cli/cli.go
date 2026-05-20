@@ -174,12 +174,14 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var htmlPath string
 	var quiet bool
 	var timeoutSeconds int
+	var servicePort int
 	var ingressURLs multiFlag
 	var externalURLs multiFlag
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
 	fs.StringVar(&opts.Namespace, "namespace", "default", "target Service namespace")
 	fs.StringVar(&opts.Service, "service", "nginx", "target Service name")
+	fs.IntVar(&servicePort, "port", 0, "target Service port; defaults to first Service port")
 	fs.Var(&ingressURLs, "ingress-url", "explicit ingress URL to test; repeatable")
 	fs.Var(&externalURLs, "external-url", "explicit external URL to test; repeatable")
 	fs.BoolVar(&opts.TestLoadBalancer, "test-load-balancer", false, "inspect/test LoadBalancer external paths")
@@ -196,6 +198,7 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	}
 	opts.IngressURLs = ingressURLs
 	opts.ExternalURLs = externalURLs
+	opts.ServicePort = int32(servicePort)
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 10
 	}
@@ -249,6 +252,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	}
 	if opts.Deployment == "" {
 		opts.Deployment = opts.Service
+		opts.DeploymentDefaulted = true
 	}
 	opts.ServicePort = int32(servicePort)
 	if timeoutSeconds <= 0 {

@@ -21,6 +21,7 @@ type IngressOptions struct {
 	Context          string
 	Namespace        string
 	Service          string
+	ServicePort      int32
 	IngressURLs      []string
 	ExternalURLs     []string
 	TestLoadBalancer bool
@@ -34,7 +35,7 @@ func RunIngress(ctx context.Context, opts IngressOptions) (*model.Report, error)
 	if opts.Service == "" {
 		opts.Service = "nginx"
 	}
-	report := model.NewReport("check ingress", model.Target{Context: opts.Context, Namespace: opts.Namespace, Service: opts.Service})
+	report := model.NewReport("check ingress", model.Target{Context: opts.Context, Namespace: opts.Namespace, Service: opts.Service, ServicePort: opts.ServicePort})
 	client, err := kube.New(opts.Context)
 	if err != nil {
 		report.Add("Cluster Access", "context", model.StatusFail, err.Error())
@@ -50,6 +51,14 @@ func RunIngress(ctx context.Context, opts IngressOptions) (*model.Report, error)
 		report.Diagnose("Target Service is missing or unreadable. Ingress backend checks cannot be trusted until the Service exists.")
 	} else {
 		report.Add("Service Layer", "service read", model.StatusPass, fmt.Sprintf("Service %q exists. Type=%s; Ports=%s", opts.Service, service.Spec.Type, servicePorts(service)))
+		selected, ok := selectServicePort(service, opts.ServicePort)
+		if ok {
+			report.Target.ServicePort = selected.Port
+			report.Add("Service Layer", "selected port", model.StatusInfo, fmt.Sprintf("Testing Service port %s.", describeServicePort(selected)))
+		} else if opts.ServicePort > 0 {
+			report.Add("Service Layer", "selected port", model.StatusFail, fmt.Sprintf("Service port %d was not found.", opts.ServicePort))
+			report.Diagnose(fmt.Sprintf("The Service does not expose expected port %d. Check the Service port definition or rerun with the port it actually exposes.", opts.ServicePort))
+		}
 	}
 	checkCalicoIngressSurface(ctx, client, report, service)
 	inspectIngressObjects(ctx, client, report, opts, service)
@@ -170,8 +179,13 @@ func testLoadBalancer(ctx context.Context, client *kube.Client, report *model.Re
 	targets := append([]string{}, opts.ExternalURLs...)
 	if service != nil && service.Spec.Type == corev1.ServiceTypeLoadBalancer {
 		port := int32(80)
-		if len(service.Spec.Ports) > 0 {
-			port = service.Spec.Ports[0].Port
+		if selected, ok := selectServicePort(service, opts.ServicePort); ok {
+			if selected.Protocol != "" && selected.Protocol != corev1.ProtocolTCP {
+				report.Add("External Load Balancing Layer", "service port", model.StatusSkip, fmt.Sprintf("Skipped generated LoadBalancer HTTP URL because selected Service port %d uses %s, not TCP.", selected.Port, selected.Protocol))
+				testIngressURLs(report, targets, opts.Timeout, "External Load Balancing Layer")
+				return
+			}
+			port = selected.Port
 		}
 		for _, item := range service.Status.LoadBalancer.Ingress {
 			host := item.Hostname
@@ -181,6 +195,9 @@ func testLoadBalancer(ctx context.Context, client *kube.Client, report *model.Re
 			if host != "" {
 				targets = append(targets, fmt.Sprintf("http://%s:%d/", host, port))
 			}
+		}
+		if len(service.Status.LoadBalancer.Ingress) == 0 {
+			report.Add("External Load Balancing Layer", "load balancer address", model.StatusWarn, fmt.Sprintf("Service %q is type LoadBalancer but has no external ingress address yet.", opts.Service))
 		}
 	} else if service != nil {
 		report.Add("External Load Balancing Layer", "service type", model.StatusSkip, fmt.Sprintf("Service %q is type %s, not LoadBalancer.", opts.Service, service.Spec.Type))
