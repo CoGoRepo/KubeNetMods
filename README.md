@@ -90,6 +90,39 @@ Check that it runs:
 .\bin\knm.exe --help
 ```
 
+## Install From A Release
+
+The easiest way to try `knm` is to download a binary from the GitHub Releases page:
+
+```text
+https://github.com/CoGoRepo/KubeNetMods/releases
+```
+
+Pick the binary for your platform:
+
+| Platform | Release artifact |
+|---|---|
+| Windows x64 | `knm-windows-amd64.exe` |
+| Linux x64 | `knm-linux-amd64` |
+| Linux ARM64 | `knm-linux-arm64` |
+| macOS Intel | `knm-darwin-amd64` |
+| macOS Apple Silicon | `knm-darwin-arm64` |
+
+Optional checksum verification is available in `checksums.txt` for each release.
+
+Windows example:
+
+```powershell
+.\knm-windows-amd64.exe --help
+```
+
+Linux/macOS example:
+
+```bash
+chmod +x ./knm-linux-amd64
+./knm-linux-amd64 --help
+```
+
 ## Command Shape
 
 ```text
