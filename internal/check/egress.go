@@ -124,7 +124,10 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 		} else {
 			report.Add("External Egress", rawURL, model.StatusFail, fmt.Sprintf("%s %q could not reach %q. %s", source.Kind, source.Pod.Name, rawURL, curl.Error))
 			if !hasDiagnosisContaining(report, "egress default-deny") && !hasDiagnosisContaining(report, "External DNS resolution failed") && !hasDiagnosisContaining(report, "runtime DNS resolver") {
-				if hasDiagnosisContaining(report, "no egress allow candidate mentions") || hasDiagnosisContaining(report, "Explicit Calico Deny") || hasDiagnosisContaining(report, "Default-deny risk: Calico") {
+				if hasDiagnosisContaining(report, "no egress allow candidate mentions") ||
+					hasDiagnosisContaining(report, "Calico ") ||
+					hasDiagnosisContaining(report, "Cilium ") ||
+					hasDiagnosisContaining(report, "NetworkPolicy ") {
 					continue
 				}
 				report.Diagnose(fmt.Sprintf("External egress to %q failed from source pod %q. Check egress NetworkPolicy/CNI policy, DNS, firewall, NAT gateway, proxy, route tables, or cloud security controls.", rawURL, source.Pod.Name))

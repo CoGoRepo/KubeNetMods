@@ -137,7 +137,7 @@ func pathSpecificBlockers(policies []unstructured.Unstructured, direction string
 			Check:     "explicit deny",
 			Status:    "FAIL",
 			Message:   fmt.Sprintf("%s rule %d explicitly Denies TCP/%s in tier %q. Reason: %s.", match.Policy, match.RuleIndex, formatBlockerPorts(ports, portNames, portText), match.Tier, match.Reason),
-			Diagnosis: fmt.Sprintf("Explicit Calico Deny: %s rule %d blocks %s TCP/%s.", match.Policy, match.RuleIndex, direction, formatBlockerPorts(ports, portNames, portText)),
+			Diagnosis: fmt.Sprintf("Primary issue: Calico %s rule %d in tier %q explicitly denies %s TCP/%s. Reason: %s.", match.Policy, match.RuleIndex, match.Tier, direction, formatBlockerPorts(ports, portNames, portText), match.Reason),
 		})
 	}
 	if len(matches) == 0 && len(allowMatches) == 0 {
@@ -238,7 +238,7 @@ func portPostureBlockers(policies []unstructured.Unstructured, direction string,
 	var insights []policy.Insight
 	for _, match := range denyMatches {
 		message := fmt.Sprintf("%s rule %d explicitly Denies TCP/%s in tier %q. Reason: %s.", match.Policy, match.RuleIndex, formatBlockerPorts(ports, portNames, portText), match.Tier, match.Reason)
-		diagnosis := fmt.Sprintf("Explicit Calico Deny: %s rule %d blocks %s TCP/%s.", match.Policy, match.RuleIndex, direction, formatBlockerPorts(ports, portNames, portText))
+		diagnosis := fmt.Sprintf("Primary issue: Calico %s rule %d in tier %q explicitly denies %s TCP/%s. Reason: %s.", match.Policy, match.RuleIndex, match.Tier, direction, formatBlockerPorts(ports, portNames, portText), match.Reason)
 		if len(missReasons) > 0 {
 			message += " Earlier allow-rule miss: " + strings.Join(missReasons, "; ") + "."
 			diagnosis += " Earlier allow-rule miss: " + missReasons[0] + "."

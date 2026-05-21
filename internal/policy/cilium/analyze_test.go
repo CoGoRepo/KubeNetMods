@@ -70,6 +70,50 @@ func TestCiliumEgressDefaultDenyWhenNoAllowPortMatches(t *testing.T) {
 	}
 }
 
+func TestCiliumShowBlockersEgressDenyPortPosture(t *testing.T) {
+	sourceNS := namespace("apps", nil)
+	source := pod("apps", "api", map[string]string{"app": "api"}, "default", "")
+	rules := []namedRule{{
+		Name: "apps/deny-db",
+		Rule: &ciliumapi.Rule{
+			EndpointSelector: es(map[string]string{"app": "api"}),
+			EgressDeny: []ciliumapi.EgressDenyRule{{
+				ToPorts: ciliumapi.PortDenyRules{{Ports: []ciliumapi.PortProtocol{{Port: "5432", Protocol: ciliumapi.ProtoTCP}}}},
+			}},
+		},
+	}}
+
+	got := ciliumEgressPortPosture(rules, sourceNS, source, []ciliumPortCandidate{{Number: 5432, Protocol: "TCP"}}, "5432", "default")
+	if got.Status != "FAIL" {
+		t.Fatalf("status = %s, want FAIL; message=%s", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "explicitly Denies TCP/5432") {
+		t.Fatalf("message should explain explicit deny, got: %s", got.Message)
+	}
+}
+
+func TestCiliumShowBlockersEgressDefaultDenyPortPosture(t *testing.T) {
+	sourceNS := namespace("apps", nil)
+	source := pod("apps", "api", map[string]string{"app": "api"}, "default", "")
+	rules := []namedRule{{
+		Name: "apps/dns-only",
+		Rule: &ciliumapi.Rule{
+			EndpointSelector: es(map[string]string{"app": "api"}),
+			Egress: []ciliumapi.EgressRule{{
+				ToPorts: ciliumapi.PortRules{{Ports: []ciliumapi.PortProtocol{{Port: "53", Protocol: ciliumapi.ProtoUDP}}}},
+			}},
+		},
+	}}
+
+	got := ciliumEgressPortPosture(rules, sourceNS, source, []ciliumPortCandidate{{Number: 5432, Protocol: "TCP"}}, "5432", "default")
+	if got.Status != "FAIL" {
+		t.Fatalf("status = %s, want FAIL; message=%s", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "no egress allow rule mentions TCP/5432") {
+		t.Fatalf("message should explain default deny, got: %s", got.Message)
+	}
+}
+
 func TestCiliumExternalEgressAllowFQDN(t *testing.T) {
 	sourceNS := namespace("apps", nil)
 	source := pod("apps", "api", map[string]string{"app": "api"}, "default", "")
@@ -161,8 +205,11 @@ func TestCiliumNamedTargetPortAllow(t *testing.T) {
 	}}
 
 	got := ciliumEgressDecision(rules, targetNS, []corev1.Pod{target}, sourceNS, source, &svc, ciliumPathPortCandidates([]int32{80}, &svc, []corev1.Pod{target}), "default", nil)
-	if got.Status != "PASS" {
-		t.Fatalf("status = %s, want PASS; message=%s", got.Status, got.Message)
+	if got.Status != "WARN" {
+		t.Fatalf("status = %s, want WARN; message=%s", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "named port") {
+		t.Fatalf("message should explain named-port ambiguity, got: %s", got.Message)
 	}
 }
 
@@ -192,8 +239,8 @@ func TestCiliumEndpointDenyUsesBackendPortNotServicePort(t *testing.T) {
 	}}
 
 	got := ciliumEgressDecision(rules, targetNS, []corev1.Pod{target}, sourceNS, source, &svc, ciliumPathPortCandidates([]int32{80}, &svc, []corev1.Pod{target}), "default", nil)
-	if got.Status != "PASS" {
-		t.Fatalf("status = %s, want PASS because deny on service port 80 should not match backend 8080/web; message=%s", got.Status, got.Message)
+	if got.Status != "WARN" {
+		t.Fatalf("status = %s, want WARN because deny on service port 80 should not match backend 8080/web but named-port allow needs runtime verification; message=%s", got.Status, got.Message)
 	}
 }
 

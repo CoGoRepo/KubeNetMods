@@ -264,7 +264,7 @@ func checkDeployment(ctx context.Context, client *kube.Client, report *model.Rep
 		report.Add(layer, "replicas", model.StatusPass, fmt.Sprintf("Deployment %q has %d/%d available replica(s).", opts.Deployment, available, desired))
 	} else {
 		report.Add(layer, "replicas", model.StatusFail, fmt.Sprintf("Deployment %q has %d/%d available replica(s) and %d/%d ready replica(s).", opts.Deployment, available, desired, ready, desired))
-		report.Diagnose("Deployment replicas are not available. Fix scheduling, image pulls, crashes, or probes before chasing service networking.")
+		report.Diagnose(fmt.Sprintf("Primary issue: Deployment %q is not healthy: %d/%d available replica(s), %d/%d ready replica(s). Fix scheduling, image pulls, crashes, probes, or app startup before chasing service networking.", opts.Deployment, available, desired, ready, desired))
 	}
 	return deployment
 }
@@ -291,7 +291,7 @@ func checkService(ctx context.Context, client *kube.Client, report *model.Report
 	}
 	if len(service.Spec.Selector) == 0 && service.Spec.Type != corev1.ServiceTypeExternalName {
 		report.Add(layer, "selector", model.StatusWarn, "Service has no selector. EndpointSlice objects must be managed separately.")
-		report.Diagnose("The Service has no selector. If it is unreachable, inspect manually managed EndpointSlices or external endpoints.")
+		report.Diagnose(fmt.Sprintf("Primary issue candidate: Service %q has no selector. If it is unreachable, inspect manually managed EndpointSlices or external endpoints for this Service.", service.Name))
 	}
 	return service, true
 }
@@ -321,7 +321,7 @@ func checkTargetPods(ctx context.Context, client *kube.Client, report *model.Rep
 	}
 	if len(pods.Items) == 0 {
 		report.Add(layer, "pods exist", model.StatusFail, "No pods found for the selected labels.")
-		report.Diagnose("No target pods matched the selector. The Service selector/deployment labels may be wrong, or the workload has not created pods.")
+		report.Diagnose(fmt.Sprintf("Primary issue: no target pods matched selector %q in namespace %q. The Service selector/deployment labels may be wrong, or the workload has not created pods.", selector, opts.Namespace))
 		return nil
 	}
 	running := 0
@@ -345,7 +345,7 @@ func checkTargetPods(ctx context.Context, client *kube.Client, report *model.Rep
 	status = model.StatusPass
 	if ready != len(pods.Items) {
 		status = model.StatusFail
-		report.Diagnose("Target pods are not Ready. Services normally avoid routing to unready pods, so fix workload health first.")
+		report.Diagnose(fmt.Sprintf("Primary issue: target pods for Service %q are not Ready: %d/%d ready. Services normally avoid routing to unready pods, so fix workload health first.", opts.Service, ready, len(pods.Items)))
 	}
 	report.Add(layer, "ready", status, fmt.Sprintf("%d/%d pod(s) are Ready.", ready, len(pods.Items)))
 	if len(states) > 0 {
@@ -388,9 +388,9 @@ func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Repo
 		report.Add(layer, "endpoint slices", model.StatusFail, fmt.Sprintf("No ready EndpointSlice addresses found for Service %q.", opts.Service))
 		if service != nil {
 			if len(service.Spec.Selector) == 0 {
-				report.Diagnose("The selectorless Service has no ready EndpointSlices. Manually managed EndpointSlices or external endpoints are missing/unready.")
+				report.Diagnose(fmt.Sprintf("Primary issue: selectorless Service %q has no ready EndpointSlice addresses. Manually managed EndpointSlices or external endpoints are missing/unready.", opts.Service))
 			} else {
-				report.Diagnose("The Service has no ready endpoints. This usually means selector mismatch, pod readiness failure, or manually managed endpoints are missing.")
+				report.Diagnose(fmt.Sprintf("Primary issue: Service %q has no ready EndpointSlice addresses for selector %q. This usually means selector mismatch, pod readiness failure, or missing manually managed endpoints.", opts.Service, labels.Set(service.Spec.Selector).String()))
 			}
 		}
 		return
@@ -414,6 +414,7 @@ func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Repo
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		report.Add(layer, "pod to endpoint match", model.StatusWarn, "Ready pod IPs missing from EndpointSlices: "+strings.Join(missing, ", "))
+		report.Diagnose(fmt.Sprintf("Primary issue candidate: Service %q has ready pod IPs missing from EndpointSlices: %s.", opts.Service, strings.Join(missing, ", ")))
 	} else {
 		report.Add(layer, "pod to endpoint match", model.StatusPass, "Selected ready pod IPs appear in ready EndpointSlices.")
 	}
@@ -455,7 +456,7 @@ func checkTargetPort(report *model.Report, service *corev1.Service, pods []corev
 		return
 	}
 	report.Add(layer, "targetPort metadata", model.StatusWarn, fmt.Sprintf("Service targetPort %s does not match declared container ports: %s.", selected.TargetPort.String(), summarizePorts(ports)))
-	report.Diagnose(fmt.Sprintf("Primary issue: Service targetPort mismatch. The Service maps %d->%s, but selected pods do not declare that target port.", selected.Port, selected.TargetPort.String()))
+	report.Diagnose(fmt.Sprintf("Primary issue: Service %q targetPort mismatch. The Service maps port %d to targetPort %s, but selected pods declare container ports: %s.", service.Name, selected.Port, selected.TargetPort.String(), summarizePorts(ports)))
 }
 
 func checkNativeNetworkPolicies(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions, service *corev1.Service, pods []corev1.Pod, source *ExecTarget) {
@@ -714,7 +715,7 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 				!hasDiagnosisContaining(report, "targetPort mismatch") &&
 				!hasDiagnosisContaining(report, "Headless Service") &&
 				!(len(service.Spec.Selector) == 0 && service.Spec.Type != corev1.ServiceTypeExternalName) {
-				report.Diagnose(fmt.Sprintf("Source-to-target service connection failed from %q to %q. Check source egress policy, target ingress policy, DNS, service routing, and app listener.", source.Pod.Name, opts.Service))
+				report.Diagnose(fmt.Sprintf("Primary issue: source pod %q failed to reach %s for Service %q. Error: %s. Check source egress policy, target ingress policy, service routing, and app listener.", source.Pod.Name, rawURL, opts.Service, compactCommandOutput(result.Error)))
 			}
 		}
 	}
@@ -739,10 +740,22 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 		} else {
 			report.Add("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusFail, fmt.Sprintf("%s failed from %s %q.", rawURL, source.Kind, source.Pod.Name))
 			if !hasPolicyPathDiagnosis(report) {
-				report.Diagnose("Direct pod IP connectivity failed from the source. Check CNI/overlay, NetworkPolicy/CNI policy, and whether the app listens on the expected pod port.")
+				report.Diagnose(fmt.Sprintf("Primary issue: direct pod IP connectivity failed from source pod %q to target pod %q on %s. Check CNI/overlay, NetworkPolicy/CNI policy, and whether the app listens on that port.", source.Pod.Name, pod.Name, rawURL))
 			}
 		}
 	}
+}
+
+func compactCommandOutput(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "(no error text)"
+	}
+	if len(value) > 220 {
+		return value[:217] + "..."
+	}
+	return value
 }
 
 func hasDiagnosisContaining(report *model.Report, fragment string) bool {
@@ -1173,7 +1186,7 @@ func analyzeNativeEgress(report *model.Report, source corev1.Pod, targetNamespac
 		return
 	}
 	report.Add("NetworkPolicy Path Analysis", "source egress to target", model.StatusWarn, fmt.Sprintf("Source pod %q is egress-isolated by NetworkPolicy (%s), and no rule obviously allows target namespace %q on TCP port(s) %s.", source.Name, strings.Join(names, ", "), targetNamespace.Name, formatPorts(ports)))
-	report.Diagnose(fmt.Sprintf("Likely issue: source egress NetworkPolicy may block traffic from %q to Service %q. Policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), strings.Join(names, ", ")))
+	report.Diagnose(fmt.Sprintf("Primary issue: native egress NetworkPolicy default-deny blocks source pod %q from Service %q on TCP port(s) %s. Selected policy/policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), formatPorts(ports), strings.Join(names, ", ")))
 }
 
 func analyzeNativeIngress(report *model.Report, source corev1.Pod, sourceNamespace corev1.Namespace, targets []corev1.Pod, targetNamespace corev1.Namespace, policies []networkingv1.NetworkPolicy, service *corev1.Service, ports []int32) {
@@ -1207,7 +1220,7 @@ func analyzeNativeIngress(report *model.Report, source corev1.Pod, sourceNamespa
 		return
 	}
 	report.Add("NetworkPolicy Path Analysis", "target ingress from source", model.StatusWarn, fmt.Sprintf("Target pods are ingress-isolated by NetworkPolicy (%s), and no rule obviously allows source namespace %q on TCP port(s) %s.", strings.Join(names, ", "), sourceNamespace.Name, formatPorts(ports)))
-	report.Diagnose(fmt.Sprintf("Likely issue: target ingress NetworkPolicy may block traffic from %q to Service %q. Policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), strings.Join(names, ", ")))
+	report.Diagnose(fmt.Sprintf("Primary issue: native ingress NetworkPolicy default-deny blocks source pod %q from Service %q on TCP port(s) %s. Selected policy/policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), formatPorts(ports), strings.Join(names, ", ")))
 }
 
 func policySelectsPod(netpol networkingv1.NetworkPolicy, pod corev1.Pod) bool {

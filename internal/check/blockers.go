@@ -10,6 +10,7 @@ import (
 	"github.com/CoGoRepo/KubeNetMods/internal/kube"
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
 	calicopolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/calico"
+	ciliumpolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/cilium"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -148,6 +149,15 @@ func RunBlockers(ctx context.Context, opts BlockersOptions) (*model.Report, erro
 		addInsights(rep, insights)
 	}
 
+	ciliumInsights, err := ciliumpolicy.ShowBlockers(ctx, client, *namespace, *subject, opts.Direction, ports, portSpec.Names, portSpec.Raw, targetNamespace, targetPods, service)
+	if err != nil {
+		rep.Add("Cilium Blockers", "analysis", model.StatusWarn, fmt.Sprintf("Could not run Cilium blocker analysis: %v", err))
+	} else if len(ciliumInsights) == 0 {
+		rep.Add("Cilium Blockers", "analysis", model.StatusInfo, "No Cilium policy analysis was produced. Cilium CRDs may not be installed or readable.")
+	} else {
+		addInsights(rep, ciliumInsights)
+	}
+
 	if rep.CountByStatus(model.StatusFail) == 0 {
 		rep.Diagnose("No policy blocker was identified for the requested subject and port.")
 	}
@@ -268,8 +278,9 @@ func addNativeEgressBlockers(rep *model.Report, source corev1.Pod, sourceNamespa
 			rep.Add("NetworkPolicy Blockers", "port posture", model.StatusInfo, fmt.Sprintf("At least one native egress rule mentions TCP/%s, but no destination was supplied, so blockers cannot be proven.", formatPorts(ports)))
 			return
 		}
-		rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects this pod, but no egress rule mentions TCP/%s. Destination was not supplied.", formatPorts(ports)))
-		rep.Diagnose(fmt.Sprintf("Native NetworkPolicy default-deny risk: pod %s/%s has no egress allow candidate for TCP/%s.", sourceNamespace.Name, source.Name, formatPorts(ports)))
+		policyList := strings.Join(nativePolicyNames(selecting), ", ")
+		rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects this pod, but no egress rule mentions TCP/%s. Destination was not supplied. Policies: %s.", formatPorts(ports), policyList))
+		rep.Diagnose(fmt.Sprintf("Primary issue: native egress NetworkPolicy default-deny risk for pod %s/%s on TCP/%s. Selected policy/policies: %s.", sourceNamespace.Name, source.Name, formatPorts(ports), policyList))
 		return
 	}
 	var allowing []string
@@ -285,8 +296,9 @@ func addNativeEgressBlockers(rep *model.Report, source corev1.Pod, sourceNamespa
 		rep.Add("NetworkPolicy Blockers", "allow", model.StatusPass, "Native egress Allow rule(s) found in: "+strings.Join(uniqueStringsLocal(allowing), ", "))
 		return
 	}
-	rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects this pod, but no rule allows the target path on TCP/%s.", formatPorts(ports)))
-	rep.Diagnose(fmt.Sprintf("Native NetworkPolicy default-deny: pod %s/%s has no egress allow to the requested target on TCP/%s.", sourceNamespace.Name, source.Name, formatPorts(ports)))
+	policyList := strings.Join(nativePolicyNames(selecting), ", ")
+	rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects this pod, but no rule allows the target path on TCP/%s. Policies: %s.", formatPorts(ports), policyList))
+	rep.Diagnose(fmt.Sprintf("Primary issue: native egress NetworkPolicy default-deny blocks pod %s/%s from the requested target on TCP/%s. Selected policy/policies: %s.", sourceNamespace.Name, source.Name, formatPorts(ports), policyList))
 }
 
 func addNativeIngressBlockers(rep *model.Report, target corev1.Pod, targetNamespace corev1.Namespace, policies []networkingv1.NetworkPolicy, ports []int32) {
@@ -304,8 +316,9 @@ func addNativeIngressBlockers(rep *model.Report, target corev1.Pod, targetNamesp
 		rep.Add("NetworkPolicy Blockers", "port posture", model.StatusInfo, fmt.Sprintf("At least one native ingress rule mentions TCP/%s. Supply a source path for stronger ingress reasoning.", formatPorts(ports)))
 		return
 	}
-	rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native ingress NetworkPolicy selects this pod, but no ingress rule mentions TCP/%s.", formatPorts(ports)))
-	rep.Diagnose(fmt.Sprintf("Native NetworkPolicy default-deny risk: pod %s/%s has no ingress allow candidate for TCP/%s.", targetNamespace.Name, target.Name, formatPorts(ports)))
+	policyList := strings.Join(nativePolicyNames(selecting), ", ")
+	rep.Add("NetworkPolicy Blockers", "default deny", model.StatusFail, fmt.Sprintf("Native ingress NetworkPolicy selects this pod, but no ingress rule mentions TCP/%s. Policies: %s.", formatPorts(ports), policyList))
+	rep.Diagnose(fmt.Sprintf("Primary issue: native ingress NetworkPolicy default-deny risk for pod %s/%s on TCP/%s. Selected policy/policies: %s.", targetNamespace.Name, target.Name, formatPorts(ports), policyList))
 }
 
 func nativeAnyRuleMentionsPort(policies []networkingv1.NetworkPolicy, direction string, ports []int32) bool {

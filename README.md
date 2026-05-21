@@ -173,6 +173,8 @@ This checks the Service, selected port, Ingress backend mapping, default backend
 
 Use this when you want policy-only analysis without runtime checks.
 
+`show blockers` evaluates native Kubernetes NetworkPolicy, Calico policy, and Cilium policy when the related CRDs are installed and readable. It can also run in preflight mode with labels before a pod exists.
+
 ```powershell
 knm show blockers `
   --context prod `

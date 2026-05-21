@@ -14,6 +14,7 @@ import (
 )
 
 func PrintText(w io.Writer, r *model.Report) {
+	colors := terminalColors()
 	fmt.Fprintf(w, "KubeNetMods %s\n", r.Command)
 	fmt.Fprintf(w, "Target: %s/%s\n", r.Target.Namespace, r.Target.Service)
 	if r.Target.Context != "" {
@@ -37,14 +38,14 @@ func PrintText(w io.Writer, r *model.Report) {
 			fmt.Fprintf(w, "== %s ==\n", result.Layer)
 			lastLayer = result.Layer
 		}
-		fmt.Fprintf(w, "[%s] %s: %s\n", result.Status, result.Check, result.Message)
+		fmt.Fprintf(w, "[%s] %s: %s\n", colors.Status(result.Status), result.Check, result.Message)
 	}
 
 	fmt.Fprintln(w, "\n== Summary ==")
 	statuses := []model.Status{model.StatusFail, model.StatusWarn, model.StatusPass, model.StatusInfo, model.StatusSkip}
 	for _, status := range statuses {
 		if count := r.CountByStatus(status); count > 0 {
-			fmt.Fprintf(w, "%s: %d\n", status, count)
+			fmt.Fprintf(w, "%s: %d\n", colors.Status(status), count)
 		}
 	}
 
@@ -66,12 +67,16 @@ func PrintBlockers(w io.Writer, r *model.Report, wide bool) {
 
 func printBlockersCompact(w io.Writer, r *model.Report) {
 	colors := terminalColors()
-	verdict, _ := blockerVerdict(r)
+	verdict, reason := blockerVerdict(r)
 	subject := blockerSubject(r)
 	fmt.Fprintf(w, "%s\n\n", colors.Bold("KubeNetMods: Policy Blocker Check"))
 	fmt.Fprintf(w, "Subject: %s\n", subject.Compact())
 	fmt.Fprintf(w, "Path:    %s\n\n", blockerPathLine(r))
-	fmt.Fprintf(w, "Result:  %s\n\n", colors.Verdict(verdictLabel(verdict)))
+	fmt.Fprintf(w, "Result:  %s\n", colors.Verdict(verdictLabel(verdict)))
+	if reason != "" {
+		fmt.Fprintf(w, "Reason:  %s\n", reason)
+	}
+	fmt.Fprintln(w)
 
 	rows := blockerRows(r)
 	if len(rows) == 0 {
@@ -253,7 +258,13 @@ func isContextOnlyBlockerWarning(result model.Result) bool {
 }
 
 func blockerReasonSummary(r *model.Report) string {
+	if len(r.Diagnoses) > 0 {
+		return r.Diagnoses[0].Message
+	}
 	for _, row := range blockerRows(r) {
+		if row.Diagnosis != "" {
+			return row.Diagnosis
+		}
 		if row.Provider != "" && row.Action != "" {
 			if row.Action == "Deny" {
 				return row.Provider + " explicit Deny"
@@ -263,9 +274,6 @@ func blockerReasonSummary(r *model.Report) string {
 			}
 			return row.Provider + " " + row.Action
 		}
-	}
-	if len(r.Diagnoses) > 0 {
-		return r.Diagnoses[0].Message
 	}
 	return ""
 }

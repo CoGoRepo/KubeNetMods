@@ -464,13 +464,17 @@ func analyzeIngressSurface(globalPolicies []unstructured.Unstructured, hostEndpo
 		insights = append(insights, *ambiguity)
 	}
 	if len(matches) == 0 {
+		diagnosis := fmt.Sprintf("Primary issue: Calico host/pre-DNAT policy may default-deny external or forwarded ingress on TCP port(s) %s.", formatPorts(ports))
+		if len(misses) > 0 {
+			diagnosis += " Closest allow-rule miss: " + misses[0] + "."
+		}
 		insights = append(insights, policy.Insight{
 			Provider:  "Calico",
 			Layer:     "Calico Host Policy Path",
 			Check:     "external ingress to node",
 			Status:    "FAIL",
 			Message:   fmt.Sprintf("Calico host/forwarded policy selects HostEndpoint(s), but no matching Allow rule was found for TCP port(s) %s.", formatPorts(ports)),
-			Diagnosis: fmt.Sprintf("Calico host/pre-DNAT policy may default-deny external or forwarded ingress on TCP port(s) %s.", formatPorts(ports)),
+			Diagnosis: diagnosis,
 		})
 		if len(misses) > 0 {
 			insights = append(insights, policy.Insight{
@@ -491,7 +495,7 @@ func analyzeIngressSurface(globalPolicies []unstructured.Unstructured, hostEndpo
 			Check:     "external ingress to node",
 			Status:    "FAIL",
 			Message:   fmt.Sprintf("First matching Calico host/forwarded action is Deny: %s rule %d in tier %q. Reason: %s.", first.Policy, first.RuleIndex, first.Tier, first.Reason),
-			Diagnosis: fmt.Sprintf("Calico host/pre-DNAT policy denies external or forwarded ingress before normal Service/backend policy. First match: %s rule %d.", first.Policy, first.RuleIndex),
+			Diagnosis: fmt.Sprintf("Primary issue: Calico host/pre-DNAT policy %s rule %d in tier %q denies external or forwarded ingress before normal Service/backend policy. Reason: %s.", first.Policy, first.RuleIndex, first.Tier, first.Reason),
 		})
 		return insights
 	}
@@ -1122,7 +1126,7 @@ func calicoDirectionDecision(policies []unstructured.Unstructured, direction str
 				Check:     check,
 				Status:    "FAIL",
 				Message:   message,
-				Diagnosis: fmt.Sprintf("Calico policy denies the %s path between source pod %q and Service %q. First match: %s in tier %q.", direction, sourcePod.Name, calicoServiceName(service), first.Policy, first.Tier),
+				Diagnosis: fmt.Sprintf("Primary issue: Calico %s rule %d in tier %q denies the %s path between source pod %q and Service %q. Reason: %s.", first.Policy, first.RuleIndex, first.Tier, direction, sourcePod.Name, calicoServiceName(service), first.Reason),
 			}
 		}
 		if first.Action == "allow" {
@@ -1228,7 +1232,7 @@ func calicoProfilesForEndpointDecision(direction string, profiles []unstructured
 					Layer:     "Calico Policy Path",
 					Status:    "FAIL",
 					Message:   fmt.Sprintf("Calico workload profile fallback denies %s via profile %q rule %d. Reason: %s.", lowerDirection, name, index+1, reason),
-					Diagnosis: fmt.Sprintf("Primary issue: Calico workload profile %q denies the %s path.", name, lowerDirection),
+					Diagnosis: fmt.Sprintf("Primary issue: Calico workload profile %q rule %d denies the %s path. Reason: %s.", name, index+1, lowerDirection, reason),
 				}, true
 			}
 		}

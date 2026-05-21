@@ -619,6 +619,9 @@ func ciliumEgressDecision(rules []namedRule, targetNamespace corev1.Namespace, t
 					}
 					if ciliumPortRulesHaveL7(allow.ToPorts) {
 						l7Allows = append(l7Allows, fmt.Sprintf("%s rule %d (%s)", wrapped.Name, index+1, ciliumL7Summary(allow.ToPorts)))
+					} else if ciliumPortRulesUseNamedPorts(allow.ToPorts) {
+						ambiguousAllows = append(ambiguousAllows, fmt.Sprintf("%s rule %d: named port allow matched statically; Cilium dataplane named-port resolution should be verified by runtime connectivity", wrapped.Name, index+1))
+						continue
 					} else {
 						allows = append(allows, fmt.Sprintf("%s rule %d", wrapped.Name, index+1))
 					}
@@ -636,7 +639,7 @@ func ciliumEgressDecision(rules []namedRule, targetNamespace corev1.Namespace, t
 		if len(denies) > 1 {
 			message += fmt.Sprintf(" %d additional matching deny rule(s) also select this path.", len(denies)-1)
 		}
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium explicit egressDeny blocks source pod %q from reaching Service %q.", sourcePod.Name, ciliumServiceName(service))}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny %s rule %d blocks source pod %q from reaching Service %q. Reason: %s.", first.Policy, first.RuleIndex, sourcePod.Name, ciliumServiceName(service), first.Reason)}
 	}
 	if len(selecting) == 0 {
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "PASS", Message: "No Cilium egress rules select the source pod."}
@@ -651,13 +654,16 @@ func ciliumEgressDecision(rules []namedRule, targetNamespace corev1.Namespace, t
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "WARN", Message: "Cilium egress policy allows the target at L3/L4, but L7 constraints are present: " + strings.Join(uniqueStrings(l7Allows), ", ") + ". Runtime HTTP/SNI/DNS behavior may still be blocked by these rules.", Diagnosis: "Cilium egress policy contains L7 constraints on the source-to-target path. If TCP connects but HTTP/SNI/DNS behavior fails, check those L7 rules."}
 	}
 	if len(ambiguousAllows) > 0 {
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "WARN", Message: "Cilium egress policy has an allow rule that may match this path, but static modeling cannot prove it cleanly: " + strings.Join(uniqueStrings(ambiguousAllows), ", ") + ". Use runtime connectivity as the tie-breaker."}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "WARN", Message: "Cilium egress policy has an allow rule that may match this path, but static modeling cannot prove it cleanly: " + strings.Join(uniqueStrings(ambiguousAllows), ", ") + ". Use runtime connectivity as the tie-breaker.", Diagnosis: "Cilium egress policy has an ambiguous allow on the source-to-target path. If runtime connectivity fails, inspect named ports, CIDR identity behavior, or service-selector semantics for the matching Cilium rule."}
 	}
-	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits Service %q on the tested path. Policies: %s.", sourcePod.Name, ciliumServiceName(service), strings.Join(uniqueStrings(selecting), ", "))
+	policyList := strings.Join(uniqueStrings(selecting), ", ")
+	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits Service %q on the tested path. Policies: %s.", sourcePod.Name, ciliumServiceName(service), policyList)
+	diagnosis := fmt.Sprintf("Primary issue: Cilium egress default-deny blocks source pod %q from reaching Service %q. Selected policy/policies: %s.", sourcePod.Name, ciliumServiceName(service), policyList)
 	if len(misses) > 0 {
 		message += " Closest allow-rule miss: " + strings.Join(misses, "; ") + "."
+		diagnosis += " Closest allow-rule miss: " + misses[0] + "."
 	}
-	return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium egress default-deny likely blocks source pod %q from reaching Service %q.", sourcePod.Name, ciliumServiceName(service))}
+	return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "source egress to target", Status: "FAIL", Message: message, Diagnosis: diagnosis}
 }
 
 func ciliumExternalEgressDecision(rules []namedRule, sourceNamespace corev1.Namespace, sourcePod corev1.Pod, host string, port int32, clusterName string) policy.Insight {
@@ -685,6 +691,9 @@ func ciliumExternalEgressDecision(rules []namedRule, sourceNamespace corev1.Name
 				if peerOK && portOK {
 					if ciliumPortRulesHaveL7(allow.ToPorts) {
 						l7Allows = append(l7Allows, fmt.Sprintf("%s rule %d (%s)", wrapped.Name, index+1, ciliumL7Summary(allow.ToPorts)))
+					} else if ciliumPortRulesUseNamedPorts(allow.ToPorts) {
+						ambiguousAllows = append(ambiguousAllows, fmt.Sprintf("%s rule %d: named port allow matched statically; Cilium dataplane named-port resolution should be verified by runtime connectivity", wrapped.Name, index+1))
+						continue
 					} else {
 						allows = append(allows, fmt.Sprintf("%s rule %d (%s)", wrapped.Name, index+1, peerReason))
 					}
@@ -700,7 +709,7 @@ func ciliumExternalEgressDecision(rules []namedRule, sourceNamespace corev1.Name
 	if len(denies) > 0 {
 		first := denies[0]
 		message := fmt.Sprintf("Cilium egressDeny blocks source pod %q from external target %s. First matching deny: %s rule %d. Reason: %s.", sourcePod.Name, target, first.Policy, first.RuleIndex, first.Reason)
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium explicit egressDeny blocks source pod %q from reaching external target %s.", sourcePod.Name, target)}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny %s rule %d blocks source pod %q from reaching external target %s. Reason: %s.", first.Policy, first.RuleIndex, sourcePod.Name, target, first.Reason)}
 	}
 	if len(selecting) == 0 {
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "PASS", Message: fmt.Sprintf("No Cilium egress rules select source pod %q for external target %s.", sourcePod.Name, target)}
@@ -714,11 +723,14 @@ func ciliumExternalEgressDecision(rules []namedRule, sourceNamespace corev1.Name
 	if len(ambiguousAllows) > 0 {
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "WARN", Message: "Cilium egress policy has an allow rule that may match after DNS resolution, but static host-only modeling cannot prove it: " + strings.Join(uniqueStrings(ambiguousAllows), ", ") + ". Runtime connectivity is the tie-breaker."}
 	}
-	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits external target %s. Policies: %s.", sourcePod.Name, target, strings.Join(uniqueStrings(selecting), ", "))
+	policyList := strings.Join(uniqueStrings(selecting), ", ")
+	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits external target %s. Policies: %s.", sourcePod.Name, target, policyList)
+	diagnosis := fmt.Sprintf("Primary issue: Cilium egress default-deny blocks source pod %q from reaching external target %s. Selected policy/policies: %s.", sourcePod.Name, target, policyList)
 	if len(misses) > 0 {
 		message += " Closest allow-rule miss: " + strings.Join(misses, "; ") + "."
+		diagnosis += " Closest allow-rule miss: " + misses[0] + "."
 	}
-	return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium egress default-deny likely blocks source pod %q from reaching external target %s.", sourcePod.Name, target)}
+	return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: diagnosis}
 }
 
 func ciliumExternalEgressAllowPeerMatches(rule ciliumapi.EgressRule, host string) (bool, string) {
@@ -824,6 +836,9 @@ func ciliumIngressDecision(rules []namedRule, targetNamespace corev1.Namespace, 
 				if peerOK && portOK {
 					if ciliumPortRulesHaveL7(allow.ToPorts) {
 						l7Allows = append(l7Allows, fmt.Sprintf("%s rule %d (%s)", wrapped.Name, index+1, ciliumL7Summary(allow.ToPorts)))
+					} else if ciliumPortRulesUseNamedPorts(allow.ToPorts) {
+						misses = appendUniqueLimited(misses, fmt.Sprintf("%s rule %d: named port allow matched statically; Cilium dataplane named-port resolution should be verified by runtime connectivity", wrapped.Name, index+1), 3)
+						continue
 					} else {
 						allows = append(allows, fmt.Sprintf("%s rule %d", wrapped.Name, index+1))
 					}
@@ -839,7 +854,7 @@ func ciliumIngressDecision(rules []namedRule, targetNamespace corev1.Namespace, 
 		if len(denies) > 1 {
 			message += fmt.Sprintf(" %d additional matching deny rule(s) also select this path.", len(denies)-1)
 		}
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium explicit ingressDeny blocks source pod %q from reaching Service %q.", sourcePod.Name, ciliumServiceName(service))}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Primary issue: Cilium ingressDeny %s rule %d blocks source pod %q from reaching Service %q. Reason: %s.", first.Policy, first.RuleIndex, sourcePod.Name, ciliumServiceName(service), first.Reason)}
 	}
 	if len(selecting) == 0 {
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "PASS", Message: "No Cilium ingress rules select the target pods."}
@@ -850,11 +865,14 @@ func ciliumIngressDecision(rules []namedRule, targetNamespace corev1.Namespace, 
 	if len(l7Allows) > 0 {
 		return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "WARN", Message: "Cilium ingress policy allows the source at L3/L4, but L7 constraints are present: " + strings.Join(uniqueStrings(l7Allows), ", ") + ". Runtime HTTP/SNI/DNS behavior may still be blocked by these rules.", Diagnosis: "Cilium ingress policy contains L7 constraints on the source-to-target path. If TCP connects but HTTP/SNI/DNS behavior fails, check those L7 rules."}
 	}
-	message := fmt.Sprintf("Cilium ingress policy selects target pods, but no ingress allow rule permits source pod %q on the tested path. Policies: %s.", sourcePod.Name, strings.Join(uniqueStrings(selecting), ", "))
+	policyList := strings.Join(uniqueStrings(selecting), ", ")
+	message := fmt.Sprintf("Cilium ingress policy selects target pods, but no ingress allow rule permits source pod %q on the tested path. Policies: %s.", sourcePod.Name, policyList)
+	diagnosis := fmt.Sprintf("Primary issue: Cilium ingress default-deny blocks source pod %q from reaching Service %q. Selected policy/policies: %s.", sourcePod.Name, ciliumServiceName(service), policyList)
 	if len(misses) > 0 {
 		message += " Closest allow-rule miss: " + strings.Join(misses, "; ") + "."
+		diagnosis += " Closest allow-rule miss: " + misses[0] + "."
 	}
-	return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Cilium ingress default-deny likely blocks source pod %q from reaching Service %q.", sourcePod.Name, ciliumServiceName(service))}
+	return policy.Insight{Provider: "Cilium", Layer: "Cilium Policy Path", Check: "target ingress from source", Status: "FAIL", Message: message, Diagnosis: diagnosis}
 }
 
 func analyzeCiliumDNS(rules []namedRule, sourceNamespace corev1.Namespace, sourcePod corev1.Pod, dns DNSContext, clusterName string, cidrGroups []ciliumCIDRGroup) []policy.Insight {
@@ -878,7 +896,7 @@ func analyzeCiliumDNS(rules []namedRule, sourceNamespace corev1.Namespace, sourc
 			}
 			for index, deny := range wrapped.Rule.EgressDeny {
 				if ciliumDNSPeerMatches(deny.EgressCommonRule, resolver, dns, clusterName, cidrGroups) && ciliumDenyPortsMatch(deny.ToPorts, ciliumDNSPortCandidates()) {
-					return []policy.Insight{{Provider: "Cilium", Layer: "Cilium DNS Policy Path", Check: "source DNS egress", Status: "FAIL", Message: fmt.Sprintf("Cilium egressDeny blocks DNS from source pod %q to runtime resolver %s via %s rule %d.", sourcePod.Name, describeResolver(resolver), wrapped.Name, index+1), Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny blocks DNS from source pod %q to its runtime resolver %s.", sourcePod.Name, describeResolver(resolver))}}
+					return []policy.Insight{{Provider: "Cilium", Layer: "Cilium DNS Policy Path", Check: "source DNS egress", Status: "FAIL", Message: fmt.Sprintf("Cilium egressDeny blocks DNS from source pod %q to runtime resolver %s via %s rule %d.", sourcePod.Name, describeResolver(resolver), wrapped.Name, index+1), Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny %s rule %d blocks DNS from source pod %q to its runtime resolver %s.", wrapped.Name, index+1, sourcePod.Name, describeResolver(resolver))}}
 				}
 			}
 			for _, allow := range wrapped.Rule.Egress {
@@ -887,7 +905,7 @@ func analyzeCiliumDNS(rules []namedRule, sourceNamespace corev1.Namespace, sourc
 				}
 			}
 		}
-		return []policy.Insight{{Provider: "Cilium", Layer: "Cilium DNS Policy Path", Check: "source DNS egress", Status: "FAIL", Message: fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits DNS to runtime resolver %s. Policies: %s.", sourcePod.Name, describeResolver(resolver), strings.Join(uniqueStrings(selecting), ", ")), Diagnosis: fmt.Sprintf("Primary issue: Cilium egress policy does not allow source pod %q to reach its runtime DNS resolver %s.", sourcePod.Name, describeResolver(resolver))}}
+		return []policy.Insight{{Provider: "Cilium", Layer: "Cilium DNS Policy Path", Check: "source DNS egress", Status: "FAIL", Message: fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits DNS to runtime resolver %s. Policies: %s.", sourcePod.Name, describeResolver(resolver), strings.Join(uniqueStrings(selecting), ", ")), Diagnosis: fmt.Sprintf("Primary issue: Cilium egress default-deny blocks DNS from source pod %q to runtime resolver %s. Selected policy/policies: %s.", sourcePod.Name, describeResolver(resolver), strings.Join(uniqueStrings(selecting), ", "))}}
 	}
 	return nil
 }
@@ -1225,6 +1243,20 @@ func ciliumPortRulesHaveL7(portRules ciliumapi.PortRules) bool {
 		}
 		if len(rule.ServerNames) > 0 || rule.TerminatingTLS != nil || rule.OriginatingTLS != nil || rule.Listener != nil {
 			return true
+		}
+	}
+	return false
+}
+
+func ciliumPortRulesUseNamedPorts(portRules ciliumapi.PortRules) bool {
+	for _, rule := range portRules {
+		for _, port := range rule.Ports {
+			if port.Port == "" {
+				continue
+			}
+			if _, err := strconv.Atoi(port.Port); err != nil {
+				return true
+			}
 		}
 	}
 	return false
