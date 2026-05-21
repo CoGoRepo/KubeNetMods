@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: Build release assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          targets=(
+            "windows amd64 knm-windows-amd64.exe"
+            "linux amd64 knm-linux-amd64"
+            "linux arm64 knm-linux-arm64"
+            "darwin amd64 knm-darwin-amd64"
+            "darwin arm64 knm-darwin-arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch output <<< "$target"
+            echo "Building $goos/$goarch -> dist/$output"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" -o "dist/$output" ./cmd/knm
+          done
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          cd dist
+
+          zip -q "knm-${version}-windows-amd64.zip" knm-windows-amd64.exe
+          tar -czf "knm-${version}-linux-amd64.tar.gz" knm-linux-amd64
+          tar -czf "knm-${version}-linux-arm64.tar.gz" knm-linux-arm64
+          tar -czf "knm-${version}-darwin-amd64.tar.gz" knm-darwin-amd64
+          tar -czf "knm-${version}-darwin-arm64.tar.gz" knm-darwin-arm64
+
+          sha256sum "knm-${version}-"* > checksums.txt
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/knm-${{ github.ref_name }}-windows-amd64.zip
+            dist/knm-${{ github.ref_name }}-linux-amd64.tar.gz
+            dist/knm-${{ github.ref_name }}-linux-arm64.tar.gz
+            dist/knm-${{ github.ref_name }}-darwin-amd64.tar.gz
+            dist/knm-${{ github.ref_name }}-darwin-arm64.tar.gz
+            dist/checksums.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          gh release create "$version" \
+            --title "$version" \
+            --generate-notes \
+            "dist/checksums.txt" \
+            "dist/knm-${version}-windows-amd64.zip" \
+            "dist/knm-${version}-linux-amd64.tar.gz" \
+            "dist/knm-${version}-linux-arm64.tar.gz" \
+            "dist/knm-${version}-darwin-amd64.tar.gz" \
+            "dist/knm-${version}-darwin-arm64.tar.gz"
