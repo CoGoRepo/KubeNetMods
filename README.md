@@ -1,39 +1,45 @@
 # KubeNetMods
 
-KubeNetMods (`knm`) is a Kubernetes network troubleshooting CLI for operators, platform engineers, and application teams.
+KubeNetMods (`knm`) is a Kubernetes network troubleshooting CLI for operators, platform engineers, SREs, and application teams.
 
 Use it when something should connect, but does not:
 
-- a pod cannot reach a Kubernetes Service
-- a workload cannot reach an external URL
+- a workload cannot reach a Kubernetes Service
+- a pod cannot reach an external URL
 - users cannot reach an app through Ingress, NodePort, or LoadBalancer
 - a policy change may block traffic before a deployment goes live
+- an alert gives you a source, target, URL, timeout, or app name and you need to find the failing layer fast
 
 `knm` runs locally from your machine. It uses your kubeconfig permissions and reads Kubernetes objects directly. It does not install an agent, controller, webhook, CRD, daemonset, or telemetry.
 
-## What It Helps Diagnose
+## Current Capabilities
 
-`knm` checks the layers that commonly break Kubernetes connectivity:
+`knm` can inspect and reason across:
 
-- cluster and namespace access
-- node readiness
+- kubeconfig context / cluster access
+- namespace access
+- node readiness and warning conditions
 - CNI and CoreDNS pod health
-- Deployment and pod readiness
-- image pull and crash states
-- Service selectors, ports, `targetPort`, NodePort, ClusterIP, ExternalName, and headless Services
-- EndpointSlice readiness
-- source pod DNS configuration
-- source-to-Service DNS resolution
+- Deployment availability
+- pod phase, readiness, image pull failures, crashes, and container states
+- Service type, selectors, ports, `targetPort`, NodePort, ClusterIP, ExternalName, and headless Service behavior
+- EndpointSlice readiness and backend mapping
+- source workload resolution by pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Service, or common app label
+- source pod DNS configuration and `/etc/resolv.conf`
+- DNS resolution from the source side
 - source-to-Service runtime reachability
-- direct source-to-pod reachability
+- source-to-target-pod direct reachability
 - native Kubernetes NetworkPolicy
-- Calico policy
-- Cilium policy
-- Ingress backend mapping
-- TLS secret and IngressClass readability
-- LoadBalancer and external URL reachability
+- Calico NetworkPolicy and GlobalNetworkPolicy
+- Calico tiers, order, allow, deny, pass, default-deny, selectors, namespace selectors, service accounts, named ports, port ranges, NetworkSets, GlobalNetworkSets, HostEndpoint/pre-DNAT/doNotTrack/applyOnForward awareness
+- Cilium NetworkPolicy and CiliumClusterwideNetworkPolicy
+- Cilium endpoint selectors, namespace selectors, services, entities, CIDRs, FQDN/DNS policy, deny rules, and default-deny behavior
+- Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
+- NodePort and LoadBalancer exposure checks
+- external egress URL checks
+- policy blocker and preflight checks before a pod exists
 
-## What It Does Not Do
+## Boundaries
 
 `knm` does not:
 
@@ -41,16 +47,17 @@ Use it when something should connect, but does not:
 - capture packets
 - install probes or agents
 - query AWS, Azure, or GCP APIs
-- inspect cloud route tables, security groups, NACLs, source/destination checks, or load balancer logs
+- inspect cloud route tables, security groups, NACLs, source/destination checks, or cloud load balancer logs
 - fully validate Gateway API resources yet
 - replace Hubble, calicoctl, the Cilium CLI, packet captures, or cloud-provider diagnostics
 
-When the evidence points below Kubernetes, `knm` reports that boundary instead of guessing at a cloud or dataplane root cause.
+When the evidence points below Kubernetes, `knm` reports that boundary instead of pretending to know a cloud or dataplane root cause it cannot prove.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
+| `knm discover` | Find Kubernetes objects by name, label, selector, service account, node, namespace, kind, or cluster/context. |
 | `knm check service` | Troubleshoot a source workload reaching a Kubernetes Service. |
 | `knm check egress` | Troubleshoot a workload reaching an external URL. |
 | `knm check ingress` | Troubleshoot external or node-facing access to an app. |
@@ -64,13 +71,13 @@ knm egress
 knm ingress
 ```
 
+`--cluster` is a friendly alias for Kubernetes `--context`. Both work. Internally, KNM uses kubeconfig contexts.
+
 ## Install
 
 Download a release binary:
 
-```text
-https://github.com/CoGoRepo/KubeNetMods/releases
-```
+[https://github.com/CoGoRepo/KubeNetMods/releases](https://github.com/CoGoRepo/KubeNetMods/releases)
 
 Common release artifacts:
 
@@ -95,7 +102,7 @@ chmod +x ./knm-linux-amd64
 ./knm-linux-amd64 --help
 ```
 
-## Build
+## Build From Source
 
 ```bash
 go build -o ./bin/knm ./cmd/knm
@@ -107,11 +114,9 @@ Windows:
 go build -o .\bin\knm.exe .\cmd\knm
 ```
 
-## Usage
+## Discover Objects
 
-### Discover Objects
-
-Use this when an alert gives you an app/workload-ish name and you need to figure out what to pass to `knm`.
+Use `discover` when an alert gives you an app/workload-ish name and you need to figure out what to pass to `knm`.
 
 ```powershell
 knm discover checkout-client `
@@ -124,6 +129,7 @@ Useful filters:
 ```text
 --cluster cluster-context-name
 --context kube-context-name
+--namespace namespace-name
 --kind pod|service|deployment|statefulset|daemonset|replicaset|ingress|networkpolicy
 --name exact-object-name
 --label key=value
@@ -132,7 +138,23 @@ Useful filters:
 --node node-name
 ```
 
-### Check A Service Path
+Example:
+
+```powershell
+knm discover checkout-client --cluster calico-dev --namespace gnarly-src
+```
+
+Typical output:
+
+```text
+KIND           NAMESPACE    NAME                              MATCH   HINT
+Deployment     gnarly-src   checkout-client                   name    source=checkout-client selector=app=checkout,role=client
+Pod            gnarly-src   checkout-client-66c78fb6d8-kczsx  name    source-pod=checkout-client-66c78fb6d8-kczsx serviceAccount=checkout-sa
+```
+
+If nothing is found, `discover` prints the searched cluster/context and namespace so wrong-cluster mistakes are easier to spot.
+
+## Check A Service Path
 
 Use this when one workload should reach another workload through a Kubernetes Service.
 
@@ -142,17 +164,36 @@ knm check service `
   --source api `
   --source-namespace apps `
   --namespace database `
-  --service postgres `
+  --target postgres `
   --port 5432 `
   --html .\reports\service.html `
   --json .\reports\service.json
 ```
 
-This checks the target Service, selected backend pods, EndpointSlices, DNS, runtime reachability, direct pod reachability, and relevant policy.
+This checks the target Service, backend pods, EndpointSlices, DNS, runtime reachability, direct pod reachability, and relevant policy.
 
-`--source` is a friendly resolver for the calling workload. It can resolve an exact Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Service, or common app label in the source namespace. Use `--source-pod` or `--source-selector` when you need to be explicit.
+Friendly resolver flags:
 
-If you already know the source is a Deployment, use the explicit resolver:
+```text
+--source             Resolve a source pod/workload/service name automatically.
+--source-deployment  Resolve a source Deployment directly.
+--source-pod         Use an exact source pod.
+--source-selector    Use an explicit source label selector.
+--target             Shortcut for the target Service name.
+--deployment         Target Deployment name. Defaults to the target Service name.
+```
+
+Examples:
+
+```powershell
+knm check service `
+  --cluster calico-dev `
+  --namespace gnarly-tgt `
+  --target ledger-api `
+  --source-namespace gnarly-src `
+  --source checkout-client `
+  --port 8443
+```
 
 ```powershell
 knm check service `
@@ -163,19 +204,9 @@ knm check service `
   --port 5432
 ```
 
-You can also use `--target` as a shortcut for the target Service name:
+Use `--use-debug-pod` when there is no real source workload to exec into.
 
-```powershell
-knm check service `
-  --cluster prod `
-  --source api `
-  --source-namespace apps `
-  --namespace database `
-  --target postgres `
-  --port 5432
-```
-
-### Check External Egress
+## Check External Egress
 
 Use this when a pod cannot reach an external URL.
 
@@ -200,7 +231,7 @@ knm check egress `
 
 This checks source pod DNS, URL resolution, HTTP reachability, native NetworkPolicy egress posture, Calico external egress posture, and Cilium external egress/DNS posture when available.
 
-### Check Ingress Or LoadBalancer Access
+## Check Ingress Or LoadBalancer Access
 
 Use this when users or external systems cannot reach an app.
 
@@ -217,7 +248,7 @@ knm check ingress `
 
 This checks the Service, selected port, Ingress backend mapping, default backends, TLS secrets, IngressClass, annotations, explicit URL reachability, LoadBalancer address state, and Calico host-policy posture when available.
 
-### Show Policy Blockers
+## Show Policy Blockers
 
 Use this when you want policy-only analysis without runtime checks.
 
@@ -261,7 +292,7 @@ knm show blockers `
 
 ## Reports
 
-Most commands support:
+Most diagnostic commands support:
 
 ```text
 --html path
@@ -271,35 +302,13 @@ Most commands support:
 
 HTML reports are for humans. JSON reports are for automation, CI, issue attachments, and downstream tooling.
 
-## Debug Pods
-
-Debug pods are disabled by default.
-
-Use `--use-debug-pod` when there is no real source workload to exec into:
-
-```powershell
-knm check service `
-  --namespace database `
-  --service postgres `
-  --source-namespace apps `
-  --use-debug-pod
-```
-
-Useful debug pod flags:
-
-```text
---debug-image
---debug-pull-policy
---source-debug-pod
-```
-
 ## Permissions
 
 `knm` needs read access to the resources it inspects. Depending on the command, that can include:
 
 - Namespaces
 - Nodes
-- Deployments
+- Deployments, StatefulSets, DaemonSets, ReplicaSets
 - Pods
 - Services
 - EndpointSlices
