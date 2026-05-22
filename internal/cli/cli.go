@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/CoGoRepo/KubeNetMods/internal/check"
@@ -78,6 +79,7 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 func runDiscover(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("knm discover", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { discoverUsage(stderr) }
 
 	var opts check.DiscoverOptions
 	var timeoutSeconds int
@@ -168,6 +170,7 @@ func normalizeDiscoverArgs(args []string) []string {
 func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("knm show blockers", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { blockersUsage(stderr) }
 
 	var opts check.BlockersOptions
 	var labels keyValueFlag
@@ -220,6 +223,7 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("knm check egress", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { egressUsage(stderr) }
 
 	var opts check.EgressOptions
 	var jsonPath string
@@ -267,6 +271,7 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("knm check ingress", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { ingressUsage(stderr) }
 
 	var opts check.IngressOptions
 	var jsonPath string
@@ -317,6 +322,7 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("knm check service", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { serviceUsage(stderr) }
 
 	var opts check.ServiceOptions
 	var jsonPath string
@@ -491,6 +497,186 @@ func finishBlockersReport(rep *model.Report, err error, quiet bool, wide bool, j
 		return 1
 	}
 	return 0
+}
+
+type helpFlag struct {
+	Names       string
+	Value       string
+	Description string
+}
+
+func printCommandHelp(w io.Writer, title string, usageLine string, aliases []string, examples []string, flags []helpFlag) {
+	fmt.Fprintln(w, title)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintf(w, "  %s\n", usageLine)
+	if len(aliases) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Aliases:")
+		for _, alias := range aliases {
+			fmt.Fprintf(w, "  %s\n", alias)
+		}
+	}
+	if len(examples) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Examples:")
+		for _, example := range examples {
+			fmt.Fprintf(w, "  %s\n", example)
+		}
+	}
+	if len(flags) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Options:")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		for _, flag := range flags {
+			name := flag.Names
+			if flag.Value != "" {
+				name += " " + flag.Value
+			}
+			fmt.Fprintf(tw, "  %s\t%s\n", name, flag.Description)
+		}
+		_ = tw.Flush()
+	}
+}
+
+func discoverUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods discover",
+		"knm discover <text|*> [options]",
+		nil,
+		[]string{
+			"knm discover checkout-client -c prod -n apps",
+			"knm discover * --cluster prod --namespace apps --kind service",
+			"knm discover ledger-api --wide",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
+			{"-n, --namespace", "name", "namespace filter; searches all namespaces when omitted"},
+			{"--kind", "kind", "pod, service, deployment, statefulset, daemonset, replicaset, ingress, networkpolicy"},
+			{"--name", "name", "exact object name filter"},
+			{"--label", "key=value", "object/template label filter; repeatable"},
+			{"--label-selector", "selector", "Kubernetes label selector filter"},
+			{"--service-account", "name", "pod service account filter"},
+			{"--node", "name", "pod node name filter"},
+			{"--wide", "", "show every matched object instead of grouped compact output"},
+			{"--timeout", "seconds", "timeout in seconds"},
+		})
+}
+
+func serviceUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods check service",
+		"knm check service [options]",
+		[]string{"knm service [options]"},
+		[]string{
+			"knm service -c prod -n database -t postgres -s frontend -p 5432",
+			"knm check service --source-namespace apps --source-deployment api --namespace database --target postgres --port 5432",
+			"knm service -n default -t api --use-debug-pod --html service.html",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "target kubeconfig context / cluster name"},
+			{"-n, --namespace", "name", "target Service namespace"},
+			{"-t, --target", "name", "target Service/workload shortcut; sets target Service and default Deployment"},
+			{"--service", "name", "target Service name"},
+			{"-d, --deployment", "name", "target Deployment name; defaults to Service name"},
+			{"-p, --port", "port", "target Service port; defaults to first Service port"},
+			{"--source-context, --source-cluster", "name", "source kubeconfig context / cluster name"},
+			{"--source-namespace", "name", "source namespace; defaults to target namespace"},
+			{"-s, --source", "name", "source pod/workload/service name"},
+			{"--source-deployment", "name", "source Deployment name"},
+			{"--source-pod", "name", "exact source workload pod name"},
+			{"--source-selector", "selector", "source workload pod label selector"},
+			{"--source-container", "name", "source workload container name"},
+			{"--target-selector", "selector", "override target backend pod selector"},
+			{"--scheme", "http|https", "URL scheme for runtime probes"},
+			{"--path", "path", "URL path for runtime probes"},
+			{"--use-debug-pod", "", "create a temporary source debug pod when no source pod is supplied"},
+			{"--debug-image", "image", "debug pod image"},
+			{"--skip-nodeport", "", "skip NodePort/host reachability checks"},
+			{"--timeout", "seconds", "per-probe/API timeout in seconds"},
+			{"--html", "path", "write HTML report"},
+			{"--json", "path", "write JSON report"},
+			{"--quiet", "", "do not print terminal report"},
+		})
+}
+
+func egressUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods check egress",
+		"knm check egress [options]",
+		[]string{"knm egress [options]"},
+		[]string{
+			"knm egress -c prod -n apps --source-selector app=api --url https://example.com",
+			"knm check egress --source-namespace apps --source-pod api-123 --url https://login.microsoftonline.com",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
+			{"-n, --source-namespace", "name", "source namespace"},
+			{"--source-pod", "name", "source workload pod name"},
+			{"--source-selector", "selector", "source workload pod label selector"},
+			{"--source-container", "name", "source workload container name"},
+			{"--use-debug-pod", "", "create a temporary source debug pod when no source pod is supplied"},
+			{"--debug-image", "image", "debug pod image"},
+			{"--url", "url", "outbound URL to test; repeatable"},
+			{"--timeout", "seconds", "timeout in seconds"},
+			{"--html", "path", "write HTML report"},
+			{"--json", "path", "write JSON report"},
+			{"--quiet", "", "do not print terminal report"},
+		})
+}
+
+func ingressUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods check ingress",
+		"knm check ingress [options]",
+		[]string{"knm ingress [options]"},
+		[]string{
+			"knm ingress -c prod -n apps -t api -p 443 --ingress-url https://api.example.com",
+			"knm check ingress --namespace apps --service api --test-load-balancer",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
+			{"-n, --namespace", "name", "target Service namespace"},
+			{"-t, --service", "name", "target Service name"},
+			{"-p, --port", "port", "target Service port; defaults to first Service port"},
+			{"--ingress-url", "url", "explicit ingress URL to test; repeatable"},
+			{"--external-url", "url", "explicit external URL to test; repeatable"},
+			{"--test-load-balancer", "", "inspect/test LoadBalancer external paths"},
+			{"--timeout", "seconds", "timeout in seconds"},
+			{"--html", "path", "write HTML report"},
+			{"--json", "path", "write JSON report"},
+			{"--quiet", "", "do not print terminal report"},
+		})
+}
+
+func blockersUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods show blockers",
+		"knm show blockers [options]",
+		nil,
+		[]string{
+			"knm show blockers -c prod -n apps --selector app=api --direction egress -p 5432",
+			"knm show blockers -n apps --labels app=api --labels env=prod --direction egress -p 443 --wide",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
+			{"-n, --namespace", "name", "subject pod namespace"},
+			{"--pod", "name", "subject pod name"},
+			{"--selector", "selector", "subject pod label selector"},
+			{"--labels", "key=value", "preflight subject labels; repeatable"},
+			{"--service-account", "name", "preflight subject service account"},
+			{"--direction", "egress|ingress", "policy direction"},
+			{"--protocol", "tcp|udp", "protocol to evaluate"},
+			{"-p, --port", "port", "port to evaluate; accepts number, name, or range like 23:53"},
+			{"--to-namespace", "name", "target namespace for path-specific evaluation"},
+			{"--to-service", "name", "target Service for path-specific evaluation"},
+			{"--to-selector", "selector", "target pod selector override for path-specific evaluation"},
+			{"--wide", "", "print detailed blocker cards instead of compact table"},
+			{"--timeout", "seconds", "timeout in seconds"},
+			{"--html", "path", "write HTML report"},
+			{"--json", "path", "write JSON report"},
+			{"--quiet", "", "do not print terminal report"},
+		})
 }
 
 type multiFlag []string
