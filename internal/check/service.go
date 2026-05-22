@@ -26,11 +26,14 @@ import (
 type ServiceOptions struct {
 	Context             string
 	Namespace           string
+	TargetName          string
 	Service             string
 	Deployment          string
 	ServicePort         int32
 	SourceContext       string
 	SourceNamespace     string
+	SourceName          string
+	SourceDeployment    string
 	SourcePodName       string
 	SourcePodSelector   string
 	TargetPodSelector   string
@@ -50,6 +53,13 @@ type ServiceOptions struct {
 func RunService(ctx context.Context, opts ServiceOptions) (*model.Report, error) {
 	if opts.Namespace == "" {
 		opts.Namespace = "default"
+	}
+	if opts.TargetName != "" {
+		opts.Service = opts.TargetName
+		if opts.Deployment == "" {
+			opts.Deployment = opts.TargetName
+			opts.DeploymentDefaulted = true
+		}
 	}
 	if opts.Service == "" {
 		opts.Service = "nginx"
@@ -321,7 +331,7 @@ func checkTargetPods(ctx context.Context, client *kube.Client, report *model.Rep
 	}
 	if len(pods.Items) == 0 {
 		report.Add(layer, "pods exist", model.StatusFail, "No pods found for the selected labels.")
-		report.Diagnose(fmt.Sprintf("Primary issue: no target pods matched selector %q in namespace %q. The Service selector/deployment labels may be wrong, or the workload has not created pods.", selector, opts.Namespace))
+		report.Diagnose(noTargetPodsDiagnosis(selector, opts.Namespace, service, deployment))
 		return nil
 	}
 	running := 0
@@ -357,6 +367,46 @@ func checkTargetPods(ctx context.Context, client *kube.Client, report *model.Rep
 	return pods.Items
 }
 
+func noTargetPodsDiagnosis(selector, namespace string, service *corev1.Service, deployment *appsv1.Deployment) string {
+	base := fmt.Sprintf("Primary issue: no target pods matched selector %q in namespace %q.", selector, namespace)
+	if hint := serviceDeploymentSelectorHint(service, deployment); hint != "" {
+		return base + " " + hint
+	}
+	return base + " The Service selector/deployment labels may be wrong, or the workload has not created pods."
+}
+
+func serviceDeploymentSelectorHint(service *corev1.Service, deployment *appsv1.Deployment) string {
+	if service == nil || deployment == nil || len(service.Spec.Selector) == 0 {
+		return ""
+	}
+	templateLabels := deployment.Spec.Template.Labels
+	if len(templateLabels) == 0 {
+		return fmt.Sprintf("Service %q selects %s, but Deployment %q pod template has no labels.", service.Name, labels.Set(service.Spec.Selector).String(), deployment.Name)
+	}
+	var mismatches []string
+	for key, wanted := range service.Spec.Selector {
+		actual, ok := templateLabels[key]
+		switch {
+		case !ok:
+			mismatches = append(mismatches, fmt.Sprintf("%s=%s is missing from Deployment pod labels", key, wanted))
+		case actual != wanted:
+			mismatches = append(mismatches, fmt.Sprintf("Service expects %s=%s, but Deployment pod label is %s=%s", key, wanted, key, actual))
+		}
+	}
+	if len(mismatches) == 0 {
+		return fmt.Sprintf("Service %q selector matches Deployment %q pod-template labels (%s), so the workload may not have created pods yet or pods may be in another namespace.", service.Name, deployment.Name, labels.Set(service.Spec.Selector).String())
+	}
+	sort.Strings(mismatches)
+	return fmt.Sprintf("Service %q selector is %s, but Deployment %q creates pods with labels %s. Mismatch: %s. The Service selector should match the target pod labels, likely %s.",
+		service.Name,
+		labels.Set(service.Spec.Selector).String(),
+		deployment.Name,
+		labels.Set(templateLabels).String(),
+		strings.Join(mismatches, "; "),
+		metav1.FormatLabelSelector(deployment.Spec.Selector),
+	)
+}
+
 func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions, service *corev1.Service, pods []corev1.Pod) {
 	layer := "Endpoint Mapping Layer"
 	if service == nil {
@@ -389,7 +439,7 @@ func checkEndpoints(ctx context.Context, client *kube.Client, report *model.Repo
 		if service != nil {
 			if len(service.Spec.Selector) == 0 {
 				report.Diagnose(fmt.Sprintf("Primary issue: selectorless Service %q has no ready EndpointSlice addresses. Manually managed EndpointSlices or external endpoints are missing/unready.", opts.Service))
-			} else {
+			} else if !hasDiagnosisContaining(report, "no target pods matched selector") {
 				report.Diagnose(fmt.Sprintf("Primary issue: Service %q has no ready EndpointSlice addresses for selector %q. This usually means selector mismatch, pod readiness failure, or missing manually managed endpoints.", opts.Service, labels.Set(service.Spec.Selector).String()))
 			}
 		}
@@ -601,8 +651,104 @@ func addInsights(report *model.Report, insights []policy.Insight) {
 	}
 }
 
+type sourceResolverResult struct {
+	Kind       string
+	ObjectName string
+	Selector   string
+	Pod        *corev1.Pod
+}
+
+func resolveSourceName(ctx context.Context, client *kube.Client, namespace string, name string) (*sourceResolverResult, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("source name was empty")
+	}
+	if pod, err := client.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		return &sourceResolverResult{Kind: "Pod", ObjectName: pod.Name, Pod: pod}, nil
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source pod %q: %v", name, err)
+	}
+
+	var candidates []sourceResolverResult
+	addSelectorCandidate := func(kind, objectName, selector string) {
+		if selector == "" {
+			return
+		}
+		pods, err := client.Core.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil || len(pods.Items) == 0 {
+			return
+		}
+		selected := selectReadyPod(pods.Items)
+		if selected == nil {
+			selected = &pods.Items[0]
+		}
+		candidates = append(candidates, sourceResolverResult{
+			Kind:       kind,
+			ObjectName: objectName,
+			Selector:   selector,
+			Pod:        selected,
+		})
+	}
+	if deployment, err := client.Core.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		addSelectorCandidate("Deployment", deployment.Name, metav1.FormatLabelSelector(deployment.Spec.Selector))
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source Deployment %q: %v", name, err)
+	}
+	if statefulSet, err := client.Core.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		addSelectorCandidate("StatefulSet", statefulSet.Name, metav1.FormatLabelSelector(statefulSet.Spec.Selector))
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source StatefulSet %q: %v", name, err)
+	}
+	if daemonSet, err := client.Core.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		addSelectorCandidate("DaemonSet", daemonSet.Name, metav1.FormatLabelSelector(daemonSet.Spec.Selector))
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source DaemonSet %q: %v", name, err)
+	}
+	if replicaSet, err := client.Core.AppsV1().ReplicaSets(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		addSelectorCandidate("ReplicaSet", replicaSet.Name, metav1.FormatLabelSelector(replicaSet.Spec.Selector))
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source ReplicaSet %q: %v", name, err)
+	}
+	if service, err := client.Core.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		addSelectorCandidate("Service", service.Name, labels.SelectorFromSet(labels.Set(service.Spec.Selector)).String())
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("could not read source Service %q: %v", name, err)
+	}
+
+	for _, key := range []string{"app", "app.kubernetes.io/name", "k8s-app", "component"} {
+		addSelectorCandidate("label selector", key+"="+name, labels.SelectorFromSet(labels.Set{key: name}).String())
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("source %q did not match a Pod, workload, Service selector, or common app label in namespace %q", name, namespace)
+	}
+
+	seen := map[string]sourceResolverResult{}
+	for _, candidate := range candidates {
+		podName := ""
+		if candidate.Pod != nil {
+			podName = candidate.Pod.Name
+		}
+		key := candidate.Selector + "|" + podName
+		if _, ok := seen[key]; !ok {
+			seen[key] = candidate
+		}
+	}
+	if len(seen) == 1 {
+		for _, candidate := range seen {
+			return &candidate, nil
+		}
+	}
+
+	var descriptions []string
+	for _, candidate := range candidates {
+		descriptions = append(descriptions, fmt.Sprintf("%s/%s selector=%s", candidate.Kind, candidate.ObjectName, candidate.Selector))
+	}
+	sort.Strings(descriptions)
+	return nil, fmt.Errorf("source %q matched multiple possible sources in namespace %q: %s. Use --source-pod or --source-selector to choose one", name, namespace, strings.Join(uniqueStrings(descriptions), "; "))
+}
+
 func checkSource(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions) *ExecTarget {
-	if opts.SourcePodName == "" && opts.SourcePodSelector == "" {
+	if opts.SourcePodName == "" && opts.SourcePodSelector == "" && opts.SourceDeployment == "" && opts.SourceName == "" {
 		if !opts.UseDebugPod {
 			report.Add("Source Path Layer", "source workload", model.StatusSkip, "No source pod name/selector was supplied and debug pod creation is disabled.")
 			return nil
@@ -624,6 +770,38 @@ func checkSource(ctx context.Context, client *kube.Client, report *model.Report,
 			return nil
 		}
 		sourceClient = other
+	}
+	if opts.SourcePodName == "" && opts.SourcePodSelector == "" && opts.SourceDeployment != "" {
+		deployment, err := sourceClient.Core.AppsV1().Deployments(opts.SourceNamespace).Get(ctx, opts.SourceDeployment, metav1.GetOptions{})
+		if err != nil {
+			report.Add("Source Resolver Layer", "source deployment", model.StatusFail, fmt.Sprintf("Source Deployment %q is not readable: %v", opts.SourceDeployment, err))
+			report.Diagnose(fmt.Sprintf("Could not resolve source Deployment %q in namespace %q. Check the source namespace/name or use --source-selector.", opts.SourceDeployment, opts.SourceNamespace))
+			return nil
+		}
+		opts.SourcePodSelector = metav1.FormatLabelSelector(deployment.Spec.Selector)
+		report.Target.SourceSelector = opts.SourcePodSelector
+		report.Add("Source Resolver Layer", "source deployment", model.StatusInfo, fmt.Sprintf("Resolved source Deployment %q to selector %s.", deployment.Name, opts.SourcePodSelector))
+	}
+	if opts.SourcePodName == "" && opts.SourcePodSelector == "" && opts.SourceName != "" {
+		resolved, err := resolveSourceName(ctx, sourceClient, opts.SourceNamespace, opts.SourceName)
+		if err != nil {
+			report.Add("Source Resolver Layer", "source name", model.StatusFail, err.Error())
+			report.Diagnose(fmt.Sprintf("Could not resolve source %q in namespace %q. Use --source-pod for an exact pod or --source-selector for labels.", opts.SourceName, opts.SourceNamespace))
+			return nil
+		}
+		report.Target.SourceSelector = resolved.Selector
+		if resolved.Pod != nil {
+			report.Target.SourcePod = resolved.Pod.Name
+			status := model.StatusPass
+			if !podReady(*resolved.Pod) {
+				status = model.StatusWarn
+			}
+			report.Add("Source Resolver Layer", "source name", status, fmt.Sprintf("Resolved source %q to %s %q, using pod %q phase=%s ready=%t.", opts.SourceName, resolved.Kind, resolved.ObjectName, resolved.Pod.Name, resolved.Pod.Status.Phase, podReady(*resolved.Pod)))
+			return &ExecTarget{Client: sourceClient, Pod: *resolved.Pod, Container: opts.SourceContainer, Kind: "source pod"}
+		}
+		opts.SourcePodSelector = resolved.Selector
+		report.Target.SourceSelector = resolved.Selector
+		report.Add("Source Resolver Layer", "source name", model.StatusInfo, fmt.Sprintf("Resolved source %q to %s %q selector %s.", opts.SourceName, resolved.Kind, resolved.ObjectName, resolved.Selector))
 	}
 	if opts.SourcePodName != "" {
 		pod, err := sourceClient.Core.CoreV1().Pods(opts.SourceNamespace).Get(ctx, opts.SourcePodName, metav1.GetOptions{})
@@ -714,6 +892,7 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 			if !hasPolicyPathDiagnosis(report) &&
 				!hasDiagnosisContaining(report, "targetPort mismatch") &&
 				!hasDiagnosisContaining(report, "Headless Service") &&
+				!hasTargetBackendDiagnosis(report) &&
 				!(len(service.Spec.Selector) == 0 && service.Spec.Type != corev1.ServiceTypeExternalName) {
 				report.Diagnose(fmt.Sprintf("Primary issue: source pod %q failed to reach %s for Service %q. Error: %s. Check source egress policy, target ingress policy, service routing, and app listener.", source.Pod.Name, rawURL, opts.Service, compactCommandOutput(result.Error)))
 			}
@@ -771,6 +950,23 @@ func hasPolicyPathDiagnosis(report *model.Report) bool {
 	for _, diagnosis := range report.Diagnoses {
 		if strings.Contains(diagnosis.Message, "Calico ") || strings.Contains(diagnosis.Message, "Cilium ") || strings.Contains(diagnosis.Message, "NetworkPolicy ") {
 			return true
+		}
+	}
+	return false
+}
+
+func hasTargetBackendDiagnosis(report *model.Report) bool {
+	fragments := []string{
+		"no target pods matched selector",
+		"has no ready EndpointSlice addresses",
+		"ready pod IPs missing from EndpointSlices",
+		"target pods for Service",
+	}
+	for _, diagnosis := range report.Diagnoses {
+		for _, fragment := range fragments {
+			if strings.Contains(diagnosis.Message, fragment) {
+				return true
+			}
 		}
 	}
 	return false

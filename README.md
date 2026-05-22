@@ -109,15 +109,38 @@ go build -o .\bin\knm.exe .\cmd\knm
 
 ## Usage
 
+### Discover Objects
+
+Use this when an alert gives you an app/workload-ish name and you need to figure out what to pass to `knm`.
+
+```powershell
+knm discover checkout-client `
+  --cluster prod `
+  --namespace apps
+```
+
+Useful filters:
+
+```text
+--cluster cluster-context-name
+--context kube-context-name
+--kind pod|service|deployment|statefulset|daemonset|replicaset|ingress|networkpolicy
+--name exact-object-name
+--label key=value
+--label-selector 'app=api,tier=backend'
+--service-account account-name
+--node node-name
+```
+
 ### Check A Service Path
 
 Use this when one workload should reach another workload through a Kubernetes Service.
 
 ```powershell
 knm check service `
-  --context prod `
+  --cluster prod `
+  --source api `
   --source-namespace apps `
-  --source-selector app=api `
   --namespace database `
   --service postgres `
   --port 5432 `
@@ -127,13 +150,38 @@ knm check service `
 
 This checks the target Service, selected backend pods, EndpointSlices, DNS, runtime reachability, direct pod reachability, and relevant policy.
 
+`--source` is a friendly resolver for the calling workload. It can resolve an exact Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Service, or common app label in the source namespace. Use `--source-pod` or `--source-selector` when you need to be explicit.
+
+If you already know the source is a Deployment, use the explicit resolver:
+
+```powershell
+knm check service `
+  --source-namespace apps `
+  --source-deployment api `
+  --namespace database `
+  --target postgres `
+  --port 5432
+```
+
+You can also use `--target` as a shortcut for the target Service name:
+
+```powershell
+knm check service `
+  --cluster prod `
+  --source api `
+  --source-namespace apps `
+  --namespace database `
+  --target postgres `
+  --port 5432
+```
+
 ### Check External Egress
 
 Use this when a pod cannot reach an external URL.
 
 ```powershell
 knm check egress `
-  --context prod `
+  --cluster prod `
   --source-namespace apps `
   --source-selector app=api `
   --url https://example.com `
@@ -158,7 +206,7 @@ Use this when users or external systems cannot reach an app.
 
 ```powershell
 knm check ingress `
-  --context prod `
+  --cluster prod `
   --namespace apps `
   --service api `
   --port 443 `
@@ -177,7 +225,7 @@ Use this when you want policy-only analysis without runtime checks.
 
 ```powershell
 knm show blockers `
-  --context prod `
+  --cluster prod `
   --namespace apps `
   --selector app=api `
   --direction egress `
