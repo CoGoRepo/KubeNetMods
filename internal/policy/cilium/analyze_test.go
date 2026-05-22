@@ -178,8 +178,8 @@ func TestCiliumExternalEgressDefaultDenyWhenFQDNMisses(t *testing.T) {
 	if got.Status != "FAIL" {
 		t.Fatalf("status = %s, want FAIL; message=%s", got.Status, got.Message)
 	}
-	if !strings.Contains(got.Message, "no egress allow rule permits external target") {
-		t.Fatalf("message should explain external default-deny, got: %s", got.Message)
+	if !strings.Contains(got.Message, "no egress allow rule permits outbound target") {
+		t.Fatalf("message should explain outbound default-deny, got: %s", got.Message)
 	}
 }
 

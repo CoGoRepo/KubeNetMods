@@ -179,7 +179,7 @@ func AnalyzeExternalEgress(ctx context.Context, client *kube.Client, sourceNames
 		}
 		return []policy.Insight{{
 			Provider: "Cilium",
-			Layer:    "Cilium External Policy Posture",
+			Layer:    "Cilium Outbound Policy Posture",
 			Check:    "ciliumnetworkpolicies",
 			Status:   "WARN",
 			Message:  fmt.Sprintf("Could not list CiliumNetworkPolicy objects: %v", err),
@@ -189,7 +189,7 @@ func AnalyzeExternalEgress(ctx context.Context, client *kube.Client, sourceNames
 	if clusterErr != nil && !isNoMatch(clusterErr) {
 		return []policy.Insight{{
 			Provider: "Cilium",
-			Layer:    "Cilium External Policy Posture",
+			Layer:    "Cilium Outbound Policy Posture",
 			Check:    "ciliumclusterwidenetworkpolicies",
 			Status:   "WARN",
 			Message:  fmt.Sprintf("Could not list CiliumClusterwideNetworkPolicy objects: %v", clusterErr),
@@ -219,7 +219,7 @@ func AnalyzeExternalEgress(ctx context.Context, client *kube.Client, sourceNames
 	if len(bad) > 0 {
 		insights = append(insights, policy.Insight{
 			Provider:  "Cilium",
-			Layer:     "Cilium External Policy Posture",
+			Layer:     "Cilium Outbound Policy Posture",
 			Check:     "policy parse",
 			Status:    "WARN",
 			Message:   "Cilium policy parse errors: " + strings.Join(bad, "; "),
@@ -708,29 +708,29 @@ func ciliumExternalEgressDecision(rules []namedRule, sourceNamespace corev1.Name
 	target := fmt.Sprintf("%s:%d", host, port)
 	if len(denies) > 0 {
 		first := denies[0]
-		message := fmt.Sprintf("Cilium egressDeny blocks source pod %q from external target %s. First matching deny: %s rule %d. Reason: %s.", sourcePod.Name, target, first.Policy, first.RuleIndex, first.Reason)
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny %s rule %d blocks source pod %q from reaching external target %s. Reason: %s.", first.Policy, first.RuleIndex, sourcePod.Name, target, first.Reason)}
+		message := fmt.Sprintf("Cilium egressDeny blocks source pod %q from outbound target %s. First matching deny: %s rule %d. Reason: %s.", sourcePod.Name, target, first.Policy, first.RuleIndex, first.Reason)
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "FAIL", Message: message, Diagnosis: fmt.Sprintf("Primary issue: Cilium egressDeny %s rule %d blocks source pod %q from reaching outbound target %s. Reason: %s.", first.Policy, first.RuleIndex, sourcePod.Name, target, first.Reason)}
 	}
 	if len(selecting) == 0 {
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "PASS", Message: fmt.Sprintf("No Cilium egress rules select source pod %q for external target %s.", sourcePod.Name, target)}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "PASS", Message: fmt.Sprintf("No Cilium egress rules select source pod %q for outbound target %s.", sourcePod.Name, target)}
 	}
 	if len(allows) > 0 {
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "PASS", Message: "Cilium egress policy appears to allow this external target. Matching policy/rule found in: " + strings.Join(uniqueStrings(allows), ", ")}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "PASS", Message: "Cilium egress policy appears to allow this outbound target. Matching policy/rule found in: " + strings.Join(uniqueStrings(allows), ", ")}
 	}
 	if len(l7Allows) > 0 {
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "WARN", Message: "Cilium egress policy allows this external target at L3/L4, but L7 constraints are present: " + strings.Join(uniqueStrings(l7Allows), ", ") + ". Runtime HTTP/SNI/DNS behavior may still be blocked by these rules.", Diagnosis: "Cilium external egress policy contains L7 constraints. If TCP connects but HTTP/SNI/DNS behavior fails, check those L7 rules."}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "WARN", Message: "Cilium egress policy allows this outbound target at L3/L4, but L7 constraints are present: " + strings.Join(uniqueStrings(l7Allows), ", ") + ". Runtime HTTP/SNI/DNS behavior may still be blocked by these rules.", Diagnosis: "Cilium outbound egress policy contains L7 constraints. If TCP connects but HTTP/SNI/DNS behavior fails, check those L7 rules."}
 	}
 	if len(ambiguousAllows) > 0 {
-		return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "WARN", Message: "Cilium egress policy has an allow rule that may match after DNS resolution, but static host-only modeling cannot prove it: " + strings.Join(uniqueStrings(ambiguousAllows), ", ") + ". Runtime connectivity is the tie-breaker."}
+		return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "WARN", Message: "Cilium egress policy has an allow rule that may match after DNS resolution, but static host-only modeling cannot prove it: " + strings.Join(uniqueStrings(ambiguousAllows), ", ") + ". Runtime connectivity is the tie-breaker."}
 	}
 	policyList := strings.Join(uniqueStrings(selecting), ", ")
-	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits external target %s. Policies: %s.", sourcePod.Name, target, policyList)
-	diagnosis := fmt.Sprintf("Primary issue: Cilium egress default-deny blocks source pod %q from reaching external target %s. Selected policy/policies: %s.", sourcePod.Name, target, policyList)
+	message := fmt.Sprintf("Cilium egress policy selects source pod %q, but no egress allow rule permits outbound target %s. Policies: %s.", sourcePod.Name, target, policyList)
+	diagnosis := fmt.Sprintf("Primary issue: Cilium egress default-deny blocks source pod %q from reaching outbound target %s. Selected policy/policies: %s.", sourcePod.Name, target, policyList)
 	if len(misses) > 0 {
 		message += " Closest allow-rule miss: " + strings.Join(misses, "; ") + "."
 		diagnosis += " Closest allow-rule miss: " + misses[0] + "."
 	}
-	return policy.Insight{Provider: "Cilium", Layer: "Cilium External Policy Posture", Check: "external egress", Status: "FAIL", Message: message, Diagnosis: diagnosis}
+	return policy.Insight{Provider: "Cilium", Layer: "Cilium Outbound Policy Posture", Check: "outbound egress", Status: "FAIL", Message: message, Diagnosis: diagnosis}
 }
 
 func ciliumExternalEgressAllowPeerMatches(rule ciliumapi.EgressRule, host string) (bool, string) {
@@ -754,7 +754,7 @@ func ciliumExternalEgressAllowPeerMatches(rule ciliumapi.EgressRule, host string
 
 func ciliumExternalEgressCommonPeerMatches(rule ciliumapi.EgressCommonRule, host string) (bool, string) {
 	if len(rule.ToEndpoints) == 0 && len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 && len(rule.ToServices) == 0 && len(rule.ToEntities) == 0 {
-		return true, "no destination peer criteria, matches external target"
+		return true, "no destination peer criteria, matches outbound target"
 	}
 	for _, entity := range rule.ToEntities {
 		value := strings.ToLower(string(entity))
@@ -768,7 +768,7 @@ func ciliumExternalEgressCommonPeerMatches(rule ciliumapi.EgressCommonRule, host
 	if len(rule.ToEndpoints) > 0 || len(rule.ToServices) > 0 {
 		return false, "cluster endpoint/service criteria do not match an external URL target"
 	}
-	return false, "destination peer criteria do not match external target"
+	return false, "destination peer criteria do not match outbound target"
 }
 
 func ciliumFQDNSelectorMatches(selector ciliumapi.FQDNSelector, host string) bool {

@@ -73,7 +73,7 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 
 	source := selectEgressSource(ctx, client, report, opts)
 	if source == nil {
-		report.Add("External Egress", "urls", model.StatusSkip, "Skipped URL checks because no executable source path was available.")
+		report.Add("Outbound Reachability", "urls", model.StatusSkip, "Skipped URL checks because no executable source path was available.")
 		return report, nil
 	}
 
@@ -90,57 +90,75 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 	inspectEgressPolicyContext(ctx, client, report, *source)
 
 	if len(opts.URLs) == 0 {
-		report.Add("External Egress", "urls", model.StatusFail, "No URLs were supplied for egress testing.")
-		report.Diagnose("No external egress target was supplied. Provide one or more URLs to test outbound connectivity.")
+		report.Add("Outbound Reachability", "urls", model.StatusFail, "No URLs were supplied for egress testing.")
+		report.Diagnose("No outbound target was supplied. Provide one or more URLs to test reachability.")
 		return report, nil
 	}
 	for _, rawURL := range opts.URLs {
 		parsed, err := url.Parse(rawURL)
 		if err != nil || parsed.Hostname() == "" || parsed.Scheme == "" {
-			report.Add("External Egress", rawURL, model.StatusFail, fmt.Sprintf("URL %q is not a valid absolute URL.", rawURL))
+			report.Add("Outbound Reachability", rawURL, model.StatusFail, fmt.Sprintf("URL %q is not a valid absolute URL.", rawURL))
 			report.Diagnose(fmt.Sprintf("Invalid egress URL %q. Provide an absolute URL such as https://example.com.", rawURL))
 			continue
 		}
 		host := parsed.Hostname()
-		report.Add("External Egress", "target "+host, model.StatusInfo, fmt.Sprintf("Testing %s://%s on port %s.", parsed.Scheme, host, urlPortText(parsed)))
+		targetClass := classifyURLTarget(host)
+		report.Add("Outbound Reachability", "target "+host, model.StatusInfo, fmt.Sprintf("Testing %s://%s on port %s. Target class: %s.", parsed.Scheme, host, urlPortText(parsed), targetClass))
 		if port, ok := urlPortNumber(parsed); ok {
 			inspectNativeEgressPortPosture(ctx, client, report, *sourceNamespace, source.Pod, port)
 			inspectCalicoEgressPortPosture(ctx, client, report, *sourceNamespace, source.Pod, port)
 			inspectCiliumExternalEgressPosture(ctx, client, report, *sourceNamespace, source.Pod, host, port)
 		} else {
-			report.Add("External Policy Posture", "target "+host, model.StatusInfo, fmt.Sprintf("Skipped port-specific policy posture for %q because no numeric port could be inferred.", rawURL))
+			report.Add("Outbound Policy Posture", "target "+host, model.StatusInfo, fmt.Sprintf("Skipped port-specific policy posture for %q because no numeric port could be inferred.", rawURL))
 		}
 		if err := resolveHost(ctx, *source, host); err != nil {
-			report.Add("External Egress", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
+			report.Add("Outbound Reachability", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
 			if !hasDiagnosisContaining(report, "runtime DNS resolver") {
-				report.Diagnose(fmt.Sprintf("External DNS resolution failed for %q from source pod %q. Check DNS policy, CoreDNS/NodeLocalDNS, egress DNS policy, proxy, or upstream resolver access.", host, source.Pod.Name))
+				report.Diagnose(fmt.Sprintf("DNS resolution failed for outbound target %q from source pod %q. Check DNS policy, CoreDNS/NodeLocalDNS, egress DNS policy, proxy, or upstream resolver access.", host, source.Pod.Name))
 			}
 		} else {
-			report.Add("External Egress", "resolve "+host, model.StatusPass, fmt.Sprintf("%s %q resolved %q.", source.Kind, source.Pod.Name, host))
+			report.Add("Outbound Reachability", "resolve "+host, model.StatusPass, fmt.Sprintf("%s %q resolved %q.", source.Kind, source.Pod.Name, host))
 		}
 		curl := curlURL(ctx, *source, rawURL, opts.Timeout)
 		if curl.OK {
-			report.Add("External Egress", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %q. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, curl.StatusCode))
+			report.Add("Outbound Reachability", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %q. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, curl.StatusCode))
 		} else {
-			report.Add("External Egress", rawURL, model.StatusFail, fmt.Sprintf("%s %q could not reach %q. %s", source.Kind, source.Pod.Name, rawURL, curl.Error))
-			if !hasDiagnosisContaining(report, "egress default-deny") && !hasDiagnosisContaining(report, "External DNS resolution failed") && !hasDiagnosisContaining(report, "runtime DNS resolver") {
+			classification := classifyRuntimeHTTPFailure(curl)
+			report.Add("Outbound Reachability", rawURL, model.StatusFail, runtimeProbeFailureMessage(*source, rawURL, curl, classification))
+			if classification.Diagnosis != "" {
+				report.Diagnose(fmt.Sprintf("Primary issue: %s for %q from source pod %q. %s", classification.Summary, rawURL, source.Pod.Name, classification.Diagnosis))
+				continue
+			}
+			if !hasDiagnosisContaining(report, "egress default-deny") && !hasDiagnosisContaining(report, "DNS resolution failed") && !hasDiagnosisContaining(report, "runtime DNS resolver") {
 				if hasDiagnosisContaining(report, "no egress allow candidate mentions") ||
 					hasDiagnosisContaining(report, "Calico ") ||
 					hasDiagnosisContaining(report, "Cilium ") ||
 					hasDiagnosisContaining(report, "NetworkPolicy ") {
 					continue
 				}
-				report.Diagnose(fmt.Sprintf("External egress to %q failed from source pod %q. Check egress NetworkPolicy/CNI policy, DNS, firewall, NAT gateway, proxy, route tables, or cloud security controls.", rawURL, source.Pod.Name))
+				report.Diagnose(fmt.Sprintf("Outbound reachability to %q failed from source pod %q. Check egress NetworkPolicy/CNI policy, DNS, firewall, NAT gateway, proxy, route tables, or cloud security controls.", rawURL, source.Pod.Name))
 			}
 		}
 	}
 	return report, nil
 }
 
+func classifyURLTarget(host string) string {
+	lower := strings.ToLower(strings.TrimSuffix(host, "."))
+	switch {
+	case lower == "localhost" || lower == "127.0.0.1" || lower == "::1":
+		return "local host"
+	case strings.HasSuffix(lower, ".svc") || strings.Contains(lower, ".svc.") || strings.HasSuffix(lower, ".svc.cluster.local"):
+		return "cluster-local service"
+	default:
+		return "external or non-cluster DNS name"
+	}
+}
+
 func inspectCiliumExternalEgressPosture(ctx context.Context, client *kube.Client, report *model.Report, sourceNamespace corev1.Namespace, sourcePod corev1.Pod, host string, port int32) {
 	insights, err := ciliumpolicy.AnalyzeExternalEgress(ctx, client, sourceNamespace, sourcePod, host, port)
 	if err != nil {
-		report.Add("Cilium External Policy Posture", fmt.Sprintf("TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect Cilium external egress policy posture: %v", err))
+		report.Add("Cilium Outbound Policy Posture", fmt.Sprintf("TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect Cilium outbound policy posture: %v", err))
 		return
 	}
 	addInsights(report, insights)
@@ -160,7 +178,7 @@ func inspectCiliumDNSPosture(ctx context.Context, client *kube.Client, report *m
 func inspectNativeEgressPortPosture(ctx context.Context, client *kube.Client, report *model.Report, sourceNamespace corev1.Namespace, sourcePod corev1.Pod, port int32) {
 	policies, err := client.Core.NetworkingV1().NetworkPolicies(sourceNamespace.Name).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		report.Add("External Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect NetworkPolicies in namespace %q: %v", sourceNamespace.Name, err))
+		report.Add("Outbound Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect NetworkPolicies in namespace %q: %v", sourceNamespace.Name, err))
 		return
 	}
 	var selecting []networkingv1.NetworkPolicy
@@ -173,17 +191,17 @@ func inspectNativeEgressPortPosture(ctx context.Context, client *kube.Client, re
 		return
 	}
 	if nativeAnyRuleMentionsPort(selecting, "egress", []int32{port}) {
-		report.Add("External Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusInfo, fmt.Sprintf("At least one native egress rule mentions TCP/%d. Destination-specific rules may still apply.", port))
+		report.Add("Outbound Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusInfo, fmt.Sprintf("At least one native egress rule mentions TCP/%d. Destination-specific rules may still apply.", port))
 		return
 	}
-	report.Add("External Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects source pod %q, but no egress rule mentions TCP/%d.", sourcePod.Name, port))
+	report.Add("Outbound Policy Posture", fmt.Sprintf("native TCP/%d", port), model.StatusFail, fmt.Sprintf("Native egress NetworkPolicy selects source pod %q, but no egress rule mentions TCP/%d.", sourcePod.Name, port))
 	report.Diagnose(fmt.Sprintf("Primary issue: native egress NetworkPolicy selects source pod %q, but no egress allow candidate mentions TCP/%d.", sourcePod.Name, port))
 }
 
 func inspectCalicoEgressPortPosture(ctx context.Context, client *kube.Client, report *model.Report, sourceNamespace corev1.Namespace, sourcePod corev1.Pod, port int32) {
 	insights, err := calicopolicy.ShowBlockers(ctx, client, sourceNamespace, sourcePod, "egress", []int32{port}, nil, fmt.Sprintf("%d", port), nil, nil, nil)
 	if err != nil {
-		report.Add("Calico External Policy Posture", fmt.Sprintf("TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect Calico egress policy posture: %v", err))
+		report.Add("Calico Outbound Policy Posture", fmt.Sprintf("TCP/%d", port), model.StatusWarn, fmt.Sprintf("Could not inspect Calico outbound policy posture: %v", err))
 		return
 	}
 	if len(insights) == 0 {
@@ -191,7 +209,7 @@ func inspectCalicoEgressPortPosture(ctx context.Context, client *kube.Client, re
 	}
 	for i := range insights {
 		if insights[i].Layer == "Calico Blockers" {
-			insights[i].Layer = "Calico External Policy Posture"
+			insights[i].Layer = "Calico Outbound Policy Posture"
 		}
 	}
 	addInsights(report, insights)
@@ -220,10 +238,10 @@ func inspectEgressPolicyContext(ctx context.Context, client *kube.Client, report
 	names := nativePolicyNames(selecting)
 	if len(defaultDeny) > 0 {
 		report.Add("Source Policy Posture", "native egress", model.StatusWarn, fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Policy object(s) with no egress rules default-deny all egress: %s.", source.Kind, source.Pod.Name, strings.Join(names, ", "), strings.Join(defaultDeny, ", ")))
-		report.Diagnose(fmt.Sprintf("Primary issue: source pod %q has native egress default-deny policy (%s). External DNS and URL traffic may be blocked before it leaves the cluster.", source.Pod.Name, strings.Join(defaultDeny, ", ")))
+		report.Diagnose(fmt.Sprintf("Primary issue: source pod %q has native egress default-deny policy (%s). Outbound DNS and URL traffic may be blocked before it leaves the cluster.", source.Pod.Name, strings.Join(defaultDeny, ", ")))
 		return
 	}
-	report.Add("Source Policy Posture", "native egress", model.StatusWarn, fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). External URL checks are the runtime tie-breaker because the destination is outside the cluster.", source.Kind, source.Pod.Name, strings.Join(names, ", ")))
+	report.Add("Source Policy Posture", "native egress", model.StatusWarn, fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Outbound URL checks are the runtime tie-breaker.", source.Kind, source.Pod.Name, strings.Join(names, ", ")))
 }
 
 func urlPortText(parsed *url.URL) string {

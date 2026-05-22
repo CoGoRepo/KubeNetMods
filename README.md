@@ -73,6 +73,17 @@ knm ingress
 
 `--cluster` is a friendly alias for Kubernetes `--context`. Both work. Internally, KNM uses kubeconfig contexts.
 
+Common shorthand flags:
+
+| Short | Long | Where |
+|---|---|---|
+| `-c` | `--context` | most commands |
+| `-n` | `--namespace` | `discover`, `service`, `ingress`, `show blockers` |
+| `-p` | `--port` | `service`, `ingress`, `show blockers` |
+| `-t` | `--target` / target Service | `service`, `ingress` |
+| `-s` | `--source` | `service` |
+| `-d` | `--deployment` | `service` |
+
 ## Install
 
 Download a release binary:
@@ -83,21 +94,23 @@ Common release artifacts:
 
 | Platform | Artifact |
 |---|---|
-| Windows x64 | `knm-windows-amd64.exe` |
-| Linux x64 | `knm-linux-amd64` |
-| Linux ARM64 | `knm-linux-arm64` |
-| macOS Intel | `knm-darwin-amd64` |
-| macOS Apple Silicon | `knm-darwin-arm64` |
+| Windows x64 | `knm-vX.Y.Z-windows-amd64.zip` |
+| Linux x64 | `knm-vX.Y.Z-linux-amd64.tar.gz` |
+| Linux ARM64 | `knm-vX.Y.Z-linux-arm64.tar.gz` |
+| macOS Intel | `knm-vX.Y.Z-darwin-amd64.tar.gz` |
+| macOS Apple Silicon | `knm-vX.Y.Z-darwin-arm64.tar.gz` |
 
 Windows:
 
 ```powershell
+Expand-Archive .\knm-vX.Y.Z-windows-amd64.zip
 .\knm-windows-amd64.exe --help
 ```
 
 Linux/macOS:
 
 ```bash
+tar -xzf ./knm-vX.Y.Z-linux-amd64.tar.gz
 chmod +x ./knm-linux-amd64
 ./knm-linux-amd64 --help
 ```
@@ -124,6 +137,14 @@ knm discover checkout-client `
   --namespace apps
 ```
 
+Use `*` to list everything in scope when you do not know what to search for yet:
+
+```powershell
+knm discover * `
+  --cluster prod `
+  --namespace apps
+```
+
 Useful filters:
 
 ```text
@@ -136,6 +157,7 @@ Useful filters:
 --label-selector 'app=api,tier=backend'
 --service-account account-name
 --node node-name
+--wide
 ```
 
 Example:
@@ -147,10 +169,11 @@ knm discover checkout-client --cluster calico-dev --namespace gnarly-src
 Typical output:
 
 ```text
-KIND           NAMESPACE    NAME                              MATCH   HINT
-Deployment     gnarly-src   checkout-client                   name    source=checkout-client selector=app=checkout,role=client
-Pod            gnarly-src   checkout-client-66c78fb6d8-kczsx  name    source-pod=checkout-client-66c78fb6d8-kczsx serviceAccount=checkout-sa
+NAMESPACE    NAME             KINDS          HINT
+gnarly-src   checkout-client  deploy,pod,rs  source=checkout-client selector=app=checkout,role=client
 ```
+
+Discovery output is grouped by default. Use `--wide` to show every matched object as a separate row.
 
 If nothing is found, `discover` prints the searched cluster/context and namespace so wrong-cluster mistakes are easier to spot.
 
@@ -206,9 +229,9 @@ knm check service `
 
 Use `--use-debug-pod` when there is no real source workload to exec into.
 
-## Check External Egress
+## Check Outbound Egress
 
-Use this when a pod cannot reach an external URL.
+Use this when a pod cannot reach an outbound URL, whether that target is internet-facing, private, or cluster-local.
 
 ```powershell
 knm check egress `
@@ -229,7 +252,7 @@ knm check egress `
   --url https://login.microsoftonline.com
 ```
 
-This checks source pod DNS, URL resolution, HTTP reachability, native NetworkPolicy egress posture, Calico external egress posture, and Cilium external egress/DNS posture when available.
+This checks source pod DNS, URL resolution, HTTP reachability, native NetworkPolicy egress posture, Calico outbound posture, and Cilium outbound/DNS posture when available.
 
 ## Check Ingress Or LoadBalancer Access
 

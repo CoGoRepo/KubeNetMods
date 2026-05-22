@@ -28,6 +28,12 @@ type RuntimeHTTPResult struct {
 	Error      string
 }
 
+type RuntimeFailureClassification struct {
+	Kind      string
+	Summary   string
+	Diagnosis string
+}
+
 type ResolvConf struct {
 	Nameservers []string
 	Searches    []string
@@ -147,6 +153,84 @@ func curlURL(ctx context.Context, target ExecTarget, rawURL string, timeout time
 	}
 	result.OK = true
 	return result
+}
+
+func classifyRuntimeHTTPFailure(result RuntimeHTTPResult) RuntimeFailureClassification {
+	text := strings.ToLower(result.Error + " " + result.Output)
+	switch {
+	case strings.Contains(text, "certificate required") || strings.Contains(text, "alert certificate required"):
+		return RuntimeFailureClassification{
+			Kind:      "tls-client-cert-required",
+			Summary:   "TLS handshake reached the target, but the server required a client certificate",
+			Diagnosis: "Connectivity appears present; validate mTLS/client certificate requirements, protocol mode, and client credentials.",
+		}
+	case strings.Contains(text, "certificate verify failed") || strings.Contains(text, "unknown ca") || strings.Contains(text, "self signed certificate"):
+		return RuntimeFailureClassification{
+			Kind:      "tls-certificate-validation",
+			Summary:   "TLS handshake reached the target, but certificate validation failed",
+			Diagnosis: "Connectivity appears present; validate certificate trust, CA bundle, SNI, and TLS settings.",
+		}
+	case strings.Contains(text, "wrong version number") || strings.Contains(text, "http request to https") || strings.Contains(text, "https") && strings.Contains(text, "plain http"):
+		return RuntimeFailureClassification{
+			Kind:      "tls-protocol-mismatch",
+			Summary:   "target was reachable, but TLS/cleartext protocol negotiation failed",
+			Diagnosis: "Connectivity appears present; validate whether this endpoint expects HTTP, HTTPS, gRPC, or another protocol.",
+		}
+	case strings.Contains(text, "received http/0.9 when not allowed") || strings.Contains(text, "unsupported protocol") || strings.Contains(text, "malformed") || strings.Contains(text, "empty reply from server"):
+		return RuntimeFailureClassification{
+			Kind:      "application-protocol-mismatch",
+			Summary:   "target was reachable, but the response did not look like normal HTTP",
+			Diagnosis: "Connectivity appears present; validate the application protocol, scheme, path, and whether the endpoint expects gRPC, raw TCP, HTTPS, or a non-HTTP protocol.",
+		}
+	case strings.Contains(text, "connection refused"):
+		return RuntimeFailureClassification{
+			Kind:      "connection-refused",
+			Summary:   "target IP and port were reachable, but the connection was refused",
+			Diagnosis: "Check whether the application is listening on the tested port, the Service targetPort, and container listener configuration.",
+		}
+	case strings.Contains(text, "could not resolve host") || strings.Contains(text, "name or service not known") || strings.Contains(text, "no such host"):
+		return RuntimeFailureClassification{
+			Kind:      "dns-resolution",
+			Summary:   "DNS resolution failed",
+			Diagnosis: "Check source pod DNS configuration, CoreDNS/NodeLocalDNS health, search domains, and DNS egress policy.",
+		}
+	}
+	return RuntimeFailureClassification{}
+}
+
+func runtimeProbeFailureMessage(target ExecTarget, rawURL string, result RuntimeHTTPResult, classification RuntimeFailureClassification) string {
+	if classification.Diagnosis == "" {
+		return fmt.Sprintf("%s %q could not reach %s. %s", target.Kind, target.Pod.Name, rawURL, result.Error)
+	}
+	switch classification.Kind {
+	case "tls-client-cert-required", "tls-certificate-validation", "tls-protocol-mismatch", "application-protocol-mismatch":
+		return fmt.Sprintf("%s probe to %s failed from %s %q. %s", probeLabel(classification), rawURL, target.Kind, target.Pod.Name, result.Error)
+	default:
+		return fmt.Sprintf("%s %q could not reach %s. %s", target.Kind, target.Pod.Name, rawURL, result.Error)
+	}
+}
+
+func directPodProbeFailureMessage(target ExecTarget, rawURL string, result RuntimeHTTPResult, classification RuntimeFailureClassification) string {
+	if classification.Diagnosis == "" {
+		return fmt.Sprintf("%s failed from %s %q.", rawURL, target.Kind, target.Pod.Name)
+	}
+	switch classification.Kind {
+	case "tls-client-cert-required", "tls-certificate-validation", "tls-protocol-mismatch", "application-protocol-mismatch":
+		return fmt.Sprintf("%s probe to %s failed from %s %q. %s", probeLabel(classification), rawURL, target.Kind, target.Pod.Name, result.Error)
+	default:
+		return fmt.Sprintf("%s failed from %s %q.", rawURL, target.Kind, target.Pod.Name)
+	}
+}
+
+func probeLabel(classification RuntimeFailureClassification) string {
+	switch classification.Kind {
+	case "tls-client-cert-required", "tls-certificate-validation", "tls-protocol-mismatch":
+		return "TLS/protocol"
+	case "application-protocol-mismatch":
+		return "Protocol"
+	default:
+		return "HTTP"
+	}
 }
 
 func hostFromURL(rawURL string) string {

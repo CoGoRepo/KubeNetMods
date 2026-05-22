@@ -82,16 +82,20 @@ func runDiscover(ctx context.Context, args []string, stdout io.Writer, stderr io
 	var opts check.DiscoverOptions
 	var timeoutSeconds int
 	var filterLabels keyValueFlag
+	var wide bool
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
 	fs.StringVar(&opts.Namespace, "namespace", "", "namespace filter; searches all namespaces when omitted")
+	fs.StringVar(&opts.Namespace, "n", "", "alias for --namespace")
 	fs.StringVar(&opts.Kind, "kind", "", "kind filter: pod, service, deployment, statefulset, daemonset, replicaset")
 	fs.StringVar(&opts.ExactName, "name", "", "exact object name filter")
 	fs.Var(&filterLabels, "label", "object/template label filter as key=value; repeatable")
 	fs.StringVar(&opts.LabelSelector, "label-selector", "", "Kubernetes label selector filter")
 	fs.StringVar(&opts.ServiceAccount, "service-account", "", "pod service account filter")
 	fs.StringVar(&opts.Node, "node", "", "pod node name filter")
+	fs.BoolVar(&wide, "wide", false, "show every matched object instead of grouped compact output")
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
 
 	normalizedArgs := normalizeDiscoverArgs(args)
@@ -103,10 +107,11 @@ func runDiscover(ctx context.Context, args []string, stdout io.Writer, stderr io
 	}
 	if fs.NArg() == 0 {
 		fmt.Fprintln(stderr, "missing search text")
-		fmt.Fprintln(stderr, "usage: knm discover <text> [--cluster name] [--namespace name] [--kind kind]")
+		fmt.Fprintln(stderr, "usage: knm discover <text|*> [--cluster name] [--namespace name] [--kind kind] [--wide]")
 		return 2
+	} else {
+		opts.Query = strings.Join(fs.Args(), " ")
 	}
-	opts.Query = strings.Join(fs.Args(), " ")
 	opts.Labels = filterLabels
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 10
@@ -120,7 +125,7 @@ func runDiscover(ctx context.Context, args []string, stdout io.Writer, stderr io
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	printDiscover(stdout, results, opts)
+	printDiscover(stdout, results, opts, wide)
 	if len(results) == 0 {
 		return 1
 	}
@@ -131,7 +136,9 @@ func normalizeDiscoverArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"--context": true, "-context": true,
 		"--cluster": true, "-cluster": true,
+		"-c":          true,
 		"--namespace": true, "-namespace": true,
+		"-n":     true,
 		"--kind": true, "-kind": true,
 		"--name": true, "-name": true,
 		"--label": true, "-label": true,
@@ -139,6 +146,7 @@ func normalizeDiscoverArgs(args []string) []string {
 		"--service-account": true, "-service-account": true,
 		"--node": true, "-node": true,
 		"--timeout": true, "-timeout": true,
+		"--wide": false, "-wide": false,
 	}
 	var flags []string
 	var positionals []string
@@ -171,7 +179,9 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
 	fs.StringVar(&opts.Namespace, "namespace", "default", "subject pod namespace")
+	fs.StringVar(&opts.Namespace, "n", "default", "alias for --namespace")
 	fs.StringVar(&opts.PodName, "pod", "", "subject pod name")
 	fs.StringVar(&opts.PodSelector, "selector", "", "subject pod label selector")
 	fs.Var(&labels, "labels", "preflight subject labels as key=value; repeatable")
@@ -179,6 +189,7 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	fs.StringVar(&opts.Direction, "direction", "egress", "policy direction: egress or ingress")
 	fs.StringVar(&opts.Protocol, "protocol", "tcp", "protocol to evaluate")
 	fs.StringVar(&opts.Port, "port", "", "TCP port to evaluate; accepts number, name, or range like 23:53")
+	fs.StringVar(&opts.Port, "p", "", "alias for --port")
 	fs.StringVar(&opts.ToNamespace, "to-namespace", "", "target namespace for path-specific evaluation")
 	fs.StringVar(&opts.ToService, "to-service", "", "target Service for path-specific evaluation")
 	fs.StringVar(&opts.ToSelector, "to-selector", "", "target pod selector override for path-specific evaluation")
@@ -219,7 +230,9 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
 	fs.StringVar(&opts.SourceNamespace, "source-namespace", "default", "source namespace")
+	fs.StringVar(&opts.SourceNamespace, "n", "default", "alias for --source-namespace")
 	fs.StringVar(&opts.SourcePodName, "source-pod", "", "source workload pod name")
 	fs.StringVar(&opts.SourceSelector, "source-selector", "", "source workload pod label selector")
 	fs.StringVar(&opts.SourceContainer, "source-container", "", "source workload container name")
@@ -266,9 +279,13 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
 	fs.StringVar(&opts.Namespace, "namespace", "default", "target Service namespace")
+	fs.StringVar(&opts.Namespace, "n", "default", "alias for --namespace")
 	fs.StringVar(&opts.Service, "service", "nginx", "target Service name")
+	fs.StringVar(&opts.Service, "t", "nginx", "alias for --service")
 	fs.IntVar(&servicePort, "port", 0, "target Service port; defaults to first Service port")
+	fs.IntVar(&servicePort, "p", 0, "alias for --port")
 	fs.Var(&ingressURLs, "ingress-url", "explicit ingress URL to test; repeatable")
 	fs.Var(&externalURLs, "external-url", "explicit external URL to test; repeatable")
 	fs.BoolVar(&opts.TestLoadBalancer, "test-load-balancer", false, "inspect/test LoadBalancer external paths")
@@ -310,15 +327,21 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 
 	fs.StringVar(&opts.Context, "context", "", "target kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
 	fs.StringVar(&opts.Namespace, "namespace", "default", "target Service namespace")
+	fs.StringVar(&opts.Namespace, "n", "default", "alias for --namespace")
 	fs.StringVar(&opts.TargetName, "target", "", "target Service/workload shortcut; sets target Service and default Deployment")
+	fs.StringVar(&opts.TargetName, "t", "", "alias for --target")
 	fs.StringVar(&opts.Service, "service", "nginx", "target Service name")
 	fs.StringVar(&opts.Deployment, "deployment", "", "target Deployment name; defaults to Service name")
+	fs.StringVar(&opts.Deployment, "d", "", "alias for --deployment")
 	fs.IntVar(&servicePort, "port", 0, "target Service port; defaults to first Service port")
+	fs.IntVar(&servicePort, "p", 0, "alias for --port")
 	fs.StringVar(&opts.SourceContext, "source-context", "", "source kubeconfig context")
 	fs.StringVar(&opts.SourceContext, "source-cluster", "", "alias for --source-context")
 	fs.StringVar(&opts.SourceNamespace, "source-namespace", "", "source namespace; defaults to target namespace")
 	fs.StringVar(&opts.SourceName, "source", "", "source pod/workload/service name; resolves to a source pod when explicit source flags are omitted")
+	fs.StringVar(&opts.SourceName, "s", "", "alias for --source")
 	fs.StringVar(&opts.SourceDeployment, "source-deployment", "", "source Deployment name; resolves to that Deployment's pod selector")
 	fs.StringVar(&opts.SourcePodName, "source-pod", "", "source workload pod name")
 	fs.StringVar(&opts.SourcePodSelector, "source-selector", "", "source workload pod label selector")
@@ -372,7 +395,7 @@ func serviceRunTimeout(perCheck time.Duration) time.Duration {
 	return total
 }
 
-func printDiscover(w io.Writer, results []check.DiscoverResult, opts check.DiscoverOptions) {
+func printDiscover(w io.Writer, results []check.DiscoverResult, opts check.DiscoverOptions, wide bool) {
 	fmt.Fprintln(w, "KubeNetMods discover")
 	if len(results) == 0 {
 		fmt.Fprintln(w, "No matching Kubernetes objects found.")
@@ -386,6 +409,17 @@ func printDiscover(w io.Writer, results []check.DiscoverResult, opts check.Disco
 		}
 		fmt.Fprintf(w, "Searched context/cluster: %s\n", contextName)
 		fmt.Fprintf(w, "Searched namespace:       %s\n", namespace)
+		return
+	}
+	if !wide {
+		groups := check.CompactDiscoverResults(results)
+		fmt.Fprintf(w, "%-24s %-34s %-22s %s\n", "NAMESPACE", "NAME", "KINDS", "HINT")
+		fmt.Fprintf(w, "%-24s %-34s %-22s %s\n", "---------", "----", "-----", "----")
+		for _, group := range groups {
+			fmt.Fprintf(w, "%-24s %-34s %-22s %s\n", group.Namespace, group.Name, strings.Join(group.Kinds, ","), group.Hint)
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Use --wide to show every matched object.")
 		return
 	}
 	fmt.Fprintf(w, "%-14s %-24s %-38s %-18s %s\n", "KIND", "NAMESPACE", "NAME", "MATCH", "HINT")

@@ -888,7 +888,14 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 		if result.OK {
 			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %s. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, result.StatusCode))
 		} else {
-			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusFail, fmt.Sprintf("%s %q could not reach %s. %s", source.Kind, source.Pod.Name, rawURL, result.Error))
+			classification := classifyRuntimeHTTPFailure(result)
+			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusFail, runtimeProbeFailureMessage(*source, rawURL, result, classification))
+			if classification.Diagnosis != "" {
+				if !hasDiagnosisContaining(report, classification.Summary) {
+					report.Diagnose(fmt.Sprintf("Primary issue: %s for %s from source pod %q. %s", classification.Summary, rawURL, source.Pod.Name, classification.Diagnosis))
+				}
+				continue
+			}
 			if !hasPolicyPathDiagnosis(report) &&
 				!hasDiagnosisContaining(report, "targetPort mismatch") &&
 				!hasDiagnosisContaining(report, "Headless Service") &&
@@ -917,7 +924,14 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 		if result.OK {
 			report.Add("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusPass, fmt.Sprintf("%s reachable from %s %q. HTTP status: %s", rawURL, source.Kind, source.Pod.Name, result.StatusCode))
 		} else {
-			report.Add("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusFail, fmt.Sprintf("%s failed from %s %q.", rawURL, source.Kind, source.Pod.Name))
+			classification := classifyRuntimeHTTPFailure(result)
+			report.Add("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusFail, directPodProbeFailureMessage(*source, rawURL, result, classification))
+			if classification.Diagnosis != "" {
+				if !hasDiagnosisContaining(report, classification.Summary) {
+					report.Diagnose(fmt.Sprintf("Primary issue: %s for direct pod check %s from source pod %q. %s", classification.Summary, rawURL, source.Pod.Name, classification.Diagnosis))
+				}
+				continue
+			}
 			if !hasPolicyPathDiagnosis(report) {
 				report.Diagnose(fmt.Sprintf("Primary issue: direct pod IP connectivity failed from source pod %q to target pod %q on %s. Check CNI/overlay, NetworkPolicy/CNI policy, and whether the app listens on that port.", source.Pod.Name, pod.Name, rawURL))
 			}
@@ -1031,7 +1045,6 @@ func directPodPortCandidates(service *corev1.Service, servicePort int32, ports [
 			out = append(out, port.Port)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 

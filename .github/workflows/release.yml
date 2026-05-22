@@ -71,6 +71,31 @@ jobs:
             dist/knm-${{ github.ref_name }}-darwin-arm64.tar.gz
             dist/checksums.txt
 
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          ## What's Changed
+
+          This release focuses on making KubeNetMods easier to drive during real troubleshooting and clearer when runtime probes hit protocol-level failures.
+
+          - Added compact grouped `knm discover` output by default, with `--wide` available for the full object list.
+          - Added explicit wildcard discovery with `knm discover *` for scoped cluster or namespace inventory.
+          - Added common shorthand flags such as `-c`, `-n`, `-t`, `-s`, `-p`, and `-d`.
+          - Fixed direct pod-to-pod checks so they prefer the selected Service `targetPort` instead of falling back to the lowest declared container port.
+          - Improved runtime diagnosis for TLS, mTLS, protocol mismatch, non-HTTP responses, connection refused, and DNS resolution failures.
+          - Renamed egress runtime output to "Outbound Reachability" so cluster-local service checks are not mislabeled as external-only egress.
+          - Refined Cilium outbound posture wording and tests.
+          - Updated README usage, discovery behavior, shorthand flags, and release artifact names.
+
+          ## Verification
+
+          - `go test ./...`
+          - `go build -o ./bin/knm ./cmd/knm`
+          - Live smoke checks against Cilium service, egress, TLS/mTLS, protocol mismatch, and discovery scenarios.
+          EOF
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,7 +105,7 @@ jobs:
           version="${GITHUB_REF_NAME}"
           gh release create "$version" \
             --title "$version" \
-            --generate-notes \
+            --notes-file release-notes.md \
             "dist/checksums.txt" \
             "dist/knm-${version}-windows-amd64.zip" \
             "dist/knm-${version}-linux-amd64.tar.gz" \
