@@ -744,11 +744,16 @@ tr:last-child td { border-bottom:0; }
   <section class="card">
     <h2>Target</h2>
     <div class="meta">
+      <div>Command<br><code>{{.Report.Command}}</code></div>
       <div>Namespace<br><code>{{.Report.Target.Namespace}}</code></div>
       <div>Service<br><code>{{.Report.Target.Service}}</code></div>
       {{if .Report.Target.Deployment}}<div>Deployment<br><code>{{.Report.Target.Deployment}}</code></div>{{end}}
+      {{if .Report.Target.ServicePort}}<div>Service Port<br><code>{{.Report.Target.ServicePort}}</code></div>{{end}}
       {{if .Report.Target.Context}}<div>Context<br><code>{{.Report.Target.Context}}</code></div>{{end}}
+      {{if .Report.Target.SourceContext}}<div>Source Context<br><code>{{.Report.Target.SourceContext}}</code></div>{{end}}
       {{if .Report.Target.SourceNS}}<div>Source Namespace<br><code>{{.Report.Target.SourceNS}}</code></div>{{end}}
+      {{if .Report.Target.SourcePod}}<div>Source Pod<br><code>{{.Report.Target.SourcePod}}</code></div>{{end}}
+      {{if .Report.Target.SourceSelector}}<div>Source Selector<br><code>{{.Report.Target.SourceSelector}}</code></div>{{end}}
       <div>Timestamp<br><code>{{.Report.Timestamp.Format "2006-01-02 15:04:05 MST"}}</code></div>
     </div>
   </section>
