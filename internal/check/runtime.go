@@ -135,12 +135,17 @@ func resolveHost(ctx context.Context, target ExecTarget, host string) error {
 	return nil
 }
 
-func curlURL(ctx context.Context, target ExecTarget, rawURL string, timeout time.Duration) RuntimeHTTPResult {
+func curlURL(ctx context.Context, target ExecTarget, rawURL string, timeout time.Duration, headers map[string]string) RuntimeHTTPResult {
 	seconds := int(timeout.Seconds())
 	if seconds <= 0 {
 		seconds = 5
 	}
-	command := fmt.Sprintf("curl -k -sS -o /dev/null -w 'HTTP_STATUS=%%{http_code}' --connect-timeout %d --max-time %d %s", seconds, seconds, shellQuote(rawURL))
+	var headerArgs []string
+	for key, value := range headers {
+		headerArgs = append(headerArgs, "-H "+shellQuote(key+": "+value))
+	}
+	sort.Strings(headerArgs)
+	command := fmt.Sprintf("curl -k -sS -i -w '\\nHTTP_STATUS=%%{http_code}' --connect-timeout %d --max-time %d %s %s", seconds, seconds, strings.Join(headerArgs, " "), shellQuote(rawURL))
 	stdout, stderr, err := execShell(ctx, target, command)
 	result := RuntimeHTTPResult{URL: rawURL, Output: stdout}
 	result.StatusCode = httpStatus(stdout)

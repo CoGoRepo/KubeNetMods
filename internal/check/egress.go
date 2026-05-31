@@ -119,7 +119,7 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 		} else {
 			report.Add("Outbound Reachability", "resolve "+host, model.StatusPass, fmt.Sprintf("%s %q resolved %q.", source.Kind, source.Pod.Name, host))
 		}
-		curl := curlURL(ctx, *source, rawURL, opts.Timeout)
+		curl := curlURL(ctx, *source, rawURL, opts.Timeout, nil)
 		if curl.OK {
 			report.Add("Outbound Reachability", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %q. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, curl.StatusCode))
 		} else {

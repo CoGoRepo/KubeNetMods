@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -554,7 +555,32 @@ type ansiColors struct {
 
 func terminalColors() ansiColors {
 	_, noColor := os.LookupEnv("NO_COLOR")
-	return ansiColors{enabled: !noColor && os.Getenv("TERM") != "dumb"}
+	if noColor {
+		return ansiColors{}
+	}
+	if os.Getenv("FORCE_COLOR") != "" || os.Getenv("CLICOLOR_FORCE") != "" {
+		return ansiColors{enabled: true}
+	}
+	term := os.Getenv("TERM")
+	if term == "dumb" {
+		return ansiColors{}
+	}
+	if runtime.GOOS == "windows" {
+		return ansiColors{enabled: windowsANSISupported()}
+	}
+	return ansiColors{enabled: term != ""}
+}
+
+func windowsANSISupported() bool {
+	if os.Getenv("WT_SESSION") != "" ||
+		os.Getenv("ANSICON") != "" ||
+		strings.EqualFold(os.Getenv("ConEmuANSI"), "ON") ||
+		os.Getenv("COLORTERM") != "" ||
+		os.Getenv("TERM_PROGRAM") != "" {
+		return true
+	}
+	term := os.Getenv("TERM")
+	return term != "" && term != "dumb"
 }
 
 func (c ansiColors) Bold(value string) string {

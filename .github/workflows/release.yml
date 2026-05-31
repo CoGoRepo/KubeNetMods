@@ -78,22 +78,23 @@ jobs:
           cat > release-notes.md <<'EOF'
           ## What's Changed
 
-          This release focuses on making KubeNetMods easier to drive during real troubleshooting and clearer when runtime probes hit protocol-level failures.
+          This release adds Istio-aware service-path diagnostics while keeping `knm check service` focused on the tested source-to-Service path.
 
-          - Added compact grouped `knm discover` output by default, with `--wide` available for the full object list.
-          - Added explicit wildcard discovery with `knm discover *` for scoped cluster or namespace inventory.
-          - Added common shorthand flags such as `-c`, `-n`, `-t`, `-s`, `-p`, and `-d`.
-          - Fixed direct pod-to-pod checks so they prefer the selected Service `targetPort` instead of falling back to the lowest declared container port.
-          - Improved runtime diagnosis for TLS, mTLS, protocol mismatch, non-HTTP responses, connection refused, and DNS resolution failures.
-          - Renamed egress runtime output to "Outbound Reachability" so cluster-local service checks are not mislabeled as external-only egress.
-          - Refined Cilium outbound posture wording and tests.
-          - Updated README usage, discovery behavior, shorthand flags, and release artifact names.
+          - Added Istio client wiring and optional mesh diagnostics when Istio CRDs are installed and readable.
+          - Added diagnosis for Istio AuthorizationPolicy DENY matches and ALLOW default-deny behavior, including matching rule numbers when KNM can prove them.
+          - Added RequestAuthentication/JWT hints and CUSTOM/external authorization visibility without treating external providers as fully modeled by KNM.
+          - Added VirtualService and DestinationRule analysis for bad subsets, source-namespace route config, weighted routes, and no-healthy-upstream 503s.
+          - Added PeerAuthentication and DestinationRule TLS checks for STRICT mTLS, unmeshed sources, and client TLS mode mismatches.
+          - Added `--path` and repeatable `--header Name=Value` runtime probe shaping for HTTP paths that depend on route/header/query matches.
+          - Improved Windows terminal ANSI handling.
+          - Added reusable Istio/Cilium lab manifests and live-test helpers.
+          - Updated README capabilities, Istio usage, permissions, and release behavior.
 
           ## Verification
 
           - `go test ./...`
-          - `go build -o ./bin/knm ./cmd/knm`
-          - Live smoke checks against Cilium service, egress, TLS/mTLS, protocol mismatch, and discovery scenarios.
+          - `go install ./cmd/knm`
+          - Live smoke checks against Cilium + Istio service-path scenarios including 403 RBAC denial, ALLOW default deny, JWT hints, 503 bad subset, weighted routes, mTLS, and DestinationRule TLS mismatch.
           EOF
 
       - name: Publish GitHub release

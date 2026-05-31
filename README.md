@@ -34,6 +34,8 @@ Use it when something should connect, but does not:
 - Calico tiers, order, allow, deny, pass, default-deny, selectors, namespace selectors, service accounts, named ports, port ranges, NetworkSets, GlobalNetworkSets, HostEndpoint/pre-DNAT/doNotTrack/applyOnForward awareness
 - Cilium NetworkPolicy and CiliumClusterwideNetworkPolicy
 - Cilium endpoint selectors, namespace selectors, services, entities, CIDRs, FQDN/DNS policy, deny rules, and default-deny behavior
+- Istio sidecar-aware service-path diagnostics when Istio CRDs are installed and readable
+- Istio AuthorizationPolicy DENY matches, ALLOW default-deny behavior, CUSTOM/external authz visibility, RequestAuthentication/JWT hints, Sidecar egress scope, PeerAuthentication mTLS posture, VirtualService routing, DestinationRule subsets, weighted routes, and client TLS mismatches
 - Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
 - NodePort and LoadBalancer exposure checks
 - external egress URL checks
@@ -49,6 +51,7 @@ Use it when something should connect, but does not:
 - query AWS, Azure, or GCP APIs
 - inspect cloud route tables, security groups, NACLs, source/destination checks, or cloud load balancer logs
 - fully validate Gateway API resources yet
+- fully emulate Envoy, Istio Pilot, or every Istio analyzer rule
 - replace Hubble, calicoctl, the Cilium CLI, packet captures, or cloud-provider diagnostics
 
 When the evidence points below Kubernetes, `knm` reports that boundary instead of pretending to know a cloud or dataplane root cause it cannot prove.
@@ -89,6 +92,8 @@ Common shorthand flags:
 Download a release binary:
 
 [https://github.com/CoGoRepo/KubeNetMods/releases](https://github.com/CoGoRepo/KubeNetMods/releases)
+
+Releases are created by GitHub Actions when a `vX.Y.Z` tag is pushed. A normal commit push updates the branch, but does not publish release assets.
 
 Common release artifacts:
 
@@ -195,6 +200,8 @@ knm check service `
 
 This checks the target Service, backend pods, EndpointSlices, DNS, runtime reachability, direct pod reachability, and relevant policy.
 
+If Istio is installed, readable, and involved in the path, `check service` also inspects mesh config that can explain Envoy responses such as `403 RBAC: access denied`, missing-JWT style `401` responses, `503 no healthy upstream`, and mTLS/DestinationRule TLS mismatches. The goal is still the same: keep the command source-to-target focused and report the most specific path reason KNM can prove.
+
 Friendly resolver flags:
 
 ```text
@@ -204,6 +211,14 @@ Friendly resolver flags:
 --source-selector    Use an explicit source label selector.
 --target             Shortcut for the target Service name.
 --deployment         Target Deployment name. Defaults to the target Service name.
+```
+
+HTTP probe shaping:
+
+```text
+--scheme http|https  Runtime probe scheme. Defaults to http.
+--path path          Runtime probe path. Defaults to /.
+--header Name=Value  Runtime probe header. Repeatable.
 ```
 
 Examples:
@@ -225,6 +240,28 @@ knm check service `
   --namespace database `
   --target postgres `
   --port 5432
+```
+
+Istio examples:
+
+```powershell
+knm service `
+  -n app `
+  -t echo-denied `
+  --source-namespace src `
+  -s curl `
+  -p 80
+```
+
+```powershell
+knm service `
+  -n app `
+  -t echo-bad-subset `
+  --source-namespace src `
+  -s curl `
+  -p 80 `
+  --path /api/items `
+  --header x-canary=true
 ```
 
 Use `--use-debug-pod` when there is no real source workload to exec into.
@@ -341,6 +378,7 @@ HTML reports are for humans. JSON reports are for automation, CI, issue attachme
 - NetworkPolicies
 - Calico CRDs
 - Cilium CRDs
+- Istio CRDs: AuthorizationPolicies, RequestAuthentications, PeerAuthentications, Sidecars, VirtualServices, and DestinationRules
 
 Runtime checks require permission to exec into the selected source pod. Debug-pod checks require permission to create and delete the debug pod.
 

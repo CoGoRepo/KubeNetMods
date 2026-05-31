@@ -3,6 +3,7 @@ package kube
 import (
 	"os"
 
+	istioclient "istio.io/client-go/pkg/clientset/versioned"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -17,6 +18,7 @@ type Client struct {
 	Core      kubernetes.Interface
 	Dynamic   dynamic.Interface
 	Discovery discovery.DiscoveryInterface
+	Istio     istioclient.Interface
 }
 
 func New(contextName string) (*Client, error) {
@@ -46,6 +48,10 @@ func New(contextName string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	istio, err := istioclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
 
 	raw, _ := loader.RawConfig()
 	actualContext := raw.CurrentContext
@@ -59,5 +65,6 @@ func New(contextName string) (*Client, error) {
 		Core:      core,
 		Dynamic:   dyn,
 		Discovery: core.Discovery(),
+		Istio:     istio,
 	}, nil
 }

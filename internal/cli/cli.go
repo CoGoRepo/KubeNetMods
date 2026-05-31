@@ -330,6 +330,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var quiet bool
 	var timeoutSeconds int
 	var servicePort int
+	var headers keyValueFlag
 
 	fs.StringVar(&opts.Context, "context", "", "target kubeconfig context")
 	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
@@ -355,6 +356,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.StringVar(&opts.TargetPodSelector, "target-selector", "", "override target backend pod selector")
 	fs.StringVar(&opts.URLScheme, "scheme", "http", "URL scheme for HTTP checks")
 	fs.StringVar(&opts.URLPath, "path", "/", "URL path for HTTP checks")
+	fs.Var(&headers, "header", "HTTP request header for runtime probes as Name=Value; repeatable")
 	fs.BoolVar(&opts.UseDebugPod, "use-debug-pod", false, "create a temporary source debug pod when no source pod is supplied")
 	fs.StringVar(&opts.DebugImage, "debug-image", "nicolaka/netshoot:latest", "debug pod image")
 	fs.StringVar(&opts.DebugPullPolicy, "debug-pull-policy", "IfNotPresent", "debug pod image pull policy")
@@ -379,6 +381,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		opts.DeploymentDefaulted = true
 	}
 	opts.ServicePort = int32(servicePort)
+	opts.HTTPHeaders = headers
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 10
 	}
@@ -590,6 +593,7 @@ func serviceUsage(w io.Writer) {
 			{"--target-selector", "selector", "override target backend pod selector"},
 			{"--scheme", "http|https", "URL scheme for runtime probes"},
 			{"--path", "path", "URL path for runtime probes"},
+			{"--header", "Name=Value", "HTTP request header for runtime probes; repeatable"},
 			{"--use-debug-pod", "", "create a temporary source debug pod when no source pod is supplied"},
 			{"--debug-image", "image", "debug pod image"},
 			{"--skip-nodeport", "", "skip NodePort/host reachability checks"},
