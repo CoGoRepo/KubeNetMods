@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,19 @@ type ResolvConf struct {
 	Nameservers []string
 	Searches    []string
 	Raw         string
+}
+
+type MTURouteSnapshot struct {
+	Target            string
+	Dev               string
+	Src               string
+	MTU               int
+	RouteMTU          int
+	LinkMTU           int
+	Route             string
+	Link              string
+	RouteDetected     bool
+	InterfaceFallback bool
 }
 
 func selectReadyPod(pods []corev1.Pod) *corev1.Pod {
@@ -121,6 +135,75 @@ func parseResolvConf(text string) ResolvConf {
 		Searches:    uniqueStrings(searches),
 		Raw:         text,
 	}
+}
+
+func readMTURouteSnapshot(ctx context.Context, target ExecTarget, targetIP string) (MTURouteSnapshot, error) {
+	snapshot := MTURouteSnapshot{Target: targetIP}
+	dev := ""
+	if targetIP != "" {
+		stdout, stderr, err := execShell(ctx, target, "ip route get "+shellQuote(targetIP))
+		if err == nil {
+			snapshot.Route = stdout
+			snapshot.Dev = routeField(stdout, "dev")
+			snapshot.Src = routeField(stdout, "src")
+			snapshot.RouteDetected = snapshot.Dev != ""
+			if mtu := routeMTU(stdout); mtu > 0 {
+				snapshot.RouteMTU = mtu
+			}
+			dev = snapshot.Dev
+		} else if stderr != "" {
+			snapshot.Route = strings.TrimSpace(stderr)
+		}
+	}
+	if dev == "" {
+		dev = "eth0"
+		snapshot.Dev = dev
+		snapshot.InterfaceFallback = true
+	}
+	stdout, stderr, err := execShell(ctx, target, "ip -o link show dev "+shellQuote(dev))
+	if err != nil {
+		if stderr != "" {
+			return snapshot, fmt.Errorf("%v: %s", err, stderr)
+		}
+		return snapshot, err
+	}
+	snapshot.Link = stdout
+	if mtu := linkMTU(stdout); mtu > 0 {
+		snapshot.LinkMTU = mtu
+		snapshot.MTU = mtu
+	} else if snapshot.RouteMTU > 0 {
+		snapshot.MTU = snapshot.RouteMTU
+	}
+	return snapshot, nil
+}
+
+func routeField(text, name string) string {
+	pattern := regexp.MustCompile(`(?:^|\s)` + regexp.QuoteMeta(name) + `\s+(\S+)`)
+	match := pattern.FindStringSubmatch(text)
+	if len(match) == 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func routeMTU(text string) int {
+	return numericRouteField(text, "mtu")
+}
+
+func linkMTU(text string) int {
+	return numericRouteField(text, "mtu")
+}
+
+func numericRouteField(text, name string) int {
+	value := routeField(text, name)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func resolveHost(ctx context.Context, target ExecTarget, host string) error {
