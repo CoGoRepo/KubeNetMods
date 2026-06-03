@@ -12,7 +12,6 @@ import (
 	istiotype "istio.io/api/type/v1beta1"
 	securityv1 "istio.io/client-go/pkg/apis/security/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -20,14 +19,17 @@ func inspectIstioAuthorizationPolicy(ctx context.Context, client *kube.Client, r
 	if client.Istio == nil {
 		return
 	}
-	items, err := client.Istio.SecurityV1().AuthorizationPolicies(opts.Namespace).List(ctx, metav1.ListOptions{})
+	items, err := listIstioAuthorizationPolicies(ctx, client, istioTargetPolicyNamespaces(ctx, client, opts.Namespace))
 	if err != nil {
 		addIstioListWarning(report, "Istio Authorization Layer", "authorization policies", err)
-		return
+		if len(items) == 0 {
+			return
+		}
 	}
+	items = enforcedIstioAuthorizationPolicies(items)
 	request := newIstioHTTPRequest(opts, service, source, rawURL)
-	matchingCustom := matchingIstioAuthorizationPolicies(items.Items, service, targetPods, securityapi.AuthorizationPolicy_CUSTOM, request)
-	for _, item := range items.Items {
+	matchingCustom := matchingIstioAuthorizationPolicies(items, service, targetPods, securityapi.AuthorizationPolicy_CUSTOM, request)
+	for _, item := range items {
 		if !istioAuthorizationPolicySelectsTarget(item, service, targetPods) {
 			continue
 		}
@@ -43,15 +45,15 @@ func inspectIstioAuthorizationPolicy(ctx context.Context, client *kube.Client, r
 			return
 		}
 	}
-	if istioAuthorizationUsesJWT(items.Items, service, targetPods) && inspectIstioRequestAuthentication(ctx, client, report, service, targetPods, model.StatusWarn) {
+	if istioAuthorizationUsesJWT(items, service, targetPods) && inspectIstioRequestAuthentication(ctx, client, report, service, targetPods, model.StatusWarn) {
 		return
 	}
-	if allowText, ok := istioAllowDefaultDeny(items.Items, service, targetPods, request); ok {
+	if allowText, ok := istioAllowDefaultDeny(items, service, targetPods, request); ok {
 		report.Add("Istio Authorization Layer", "allow policies", model.StatusFail, fmt.Sprintf("Target pods selected by Service %q are selected by Istio ALLOW AuthorizationPolicy object(s), but none match this source/request. Policies: %s.", service.Name, allowText))
 		report.Diagnose(fmt.Sprintf("Primary issue: Target workload is selected by Istio ALLOW AuthorizationPolicy object(s), but none match source pod %q for Service %q, so Envoy denies the request. Policies: %s.", source.Pod.Name, serviceName(service), allowText))
 		return
 	}
-	if riskyRules := riskyIstioDenyHTTPRules(items.Items, service, targetPods); len(riskyRules) > 0 {
+	if riskyRules := riskyIstioDenyHTTPRules(items, service, targetPods); len(riskyRules) > 0 {
 		riskyText := strings.Join(riskyRules, ", ")
 		report.Add("Istio Authorization Layer", "authorization policies", model.StatusFail, fmt.Sprintf("Envoy returned RBAC access denied and selected DENY AuthorizationPolicy rule(s) %s use HTTP match fields without an explicit port constraint.", riskyText))
 		report.Diagnose(fmt.Sprintf("Primary issue: Istio DENY AuthorizationPolicy rule(s) %s use HTTP-only match fields without an explicit port constraint. Istio can apply those DENY rules more broadly than expected when HTTP attributes are unavailable; add operation.ports or a destination.port condition to bound the rule.", riskyText))
@@ -65,6 +67,22 @@ func inspectIstioAuthorizationPolicy(ctx context.Context, client *kube.Client, r
 	}
 	report.Add("Istio Authorization Layer", "authorization policies", model.StatusWarn, "Envoy returned RBAC access denied, but no matching DENY AuthorizationPolicy was identified by static inspection.")
 	report.Diagnose(fmt.Sprintf("Primary issue: Envoy denied the request to Service %q with RBAC: access denied, but KubeNetMods could not identify the exact AuthorizationPolicy.", serviceName(service)))
+}
+
+func enforcedIstioAuthorizationPolicies(items []*securityv1.AuthorizationPolicy) []*securityv1.AuthorizationPolicy {
+	var out []*securityv1.AuthorizationPolicy
+	for _, item := range items {
+		if item == nil || istioAuthorizationPolicyDryRun(item) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func istioAuthorizationPolicyDryRun(item *securityv1.AuthorizationPolicy) bool {
+	value := item.Annotations["istio.io/dry-run"]
+	return strings.EqualFold(strings.TrimSpace(value), "true")
 }
 
 func istioAuthorizationPolicySelectsTarget(item *securityv1.AuthorizationPolicy, service *corev1.Service, pods []corev1.Pod) bool {

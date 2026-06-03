@@ -25,6 +25,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test
+        shell: bash
+        run: go test ./...
+
       - name: Build binaries
         shell: bash
         run: |
@@ -83,7 +87,8 @@ jobs:
           - Added Istio client wiring and optional mesh diagnostics when Istio CRDs are installed and readable.
           - Added diagnosis for Istio AuthorizationPolicy DENY matches and ALLOW default-deny behavior, including matching rule numbers when KNM can prove them.
           - Added RequestAuthentication/JWT hints and CUSTOM/external authorization visibility without treating external providers as fully modeled by KNM.
-          - Added VirtualService and DestinationRule analysis for bad subsets, source-namespace route config, weighted routes, and no-healthy-upstream 503s.
+          - Added VirtualService and DestinationRule analysis for bad subsets, source-namespace route config, weighted routes, direct responses, redirects, fault injection, and no-healthy-upstream 503s.
+          - Added mesh visibility guardrails for VirtualService gateways/exportTo, DestinationRule exportTo, and dry-run AuthorizationPolicy objects.
           - Added PeerAuthentication and DestinationRule TLS checks for STRICT mTLS, unmeshed sources, and client TLS mode mismatches.
           - Added `--path` and repeatable `--header Name=Value` runtime probe shaping for HTTP paths that depend on route/header/query matches.
           - Improved Windows terminal ANSI handling.

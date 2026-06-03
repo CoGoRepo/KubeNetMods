@@ -7,6 +7,7 @@ import (
 
 	"github.com/CoGoRepo/KubeNetMods/internal/kube"
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
+	duration "github.com/golang/protobuf/ptypes/duration"
 	networkingapi "istio.io/api/networking/v1alpha3"
 	securityapi "istio.io/api/security/v1beta1"
 	istiotype "istio.io/api/type/v1beta1"
@@ -69,6 +70,62 @@ func TestInspectIstioAuthorizationPolicyReportsMatchingDeny(t *testing.T) {
 	assertResult(t, report, "Istio Authorization Layer", "app/deny-echo-denied", model.StatusFail)
 	assertDiagnosisContains(t, report, "AuthorizationPolicy \"app/deny-echo-denied\" denies requests")
 	assertDiagnosisContains(t, report, "via rule 1")
+}
+
+func TestInspectIstioAuthorizationPolicyIgnoresDryRunDeny(t *testing.T) {
+	service := testService("app", "echo-denied")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-denied-abc", map[string]string{"app": "echo-denied"}, true, true),
+	}
+	source := &ExecTarget{
+		Kind: "source pod",
+		Pod:  testPod("src", "curl-abc", map[string]string{"app": "curl"}, true, true),
+	}
+	policy := &securityv1.AuthorizationPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "dry-run-deny",
+			Namespace:   "app",
+			Annotations: map[string]string{"istio.io/dry-run": "true"},
+		},
+		Spec: securityapi.AuthorizationPolicy{
+			Selector: &istiotype.WorkloadSelector{MatchLabels: map[string]string{"app": "echo-denied"}},
+			Action:   securityapi.AuthorizationPolicy_DENY,
+			Rules:    []*securityapi.Rule{{}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-denied"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(policy)}
+
+	inspectIstioAuthorizationPolicy(context.Background(), client, report, ServiceOptions{Namespace: "app"}, service, targetPods, source, "http://echo-denied.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "could not identify the exact AuthorizationPolicy")
+	assertDiagnosisNotContains(t, report, "dry-run-deny")
+}
+
+func TestInspectIstioAuthorizationPolicyUsesRootNamespacePolicy(t *testing.T) {
+	service := testService("app", "echo-denied")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-denied-abc", map[string]string{"app": "echo-denied"}, true, true),
+	}
+	source := &ExecTarget{
+		Kind: "source pod",
+		Pod:  testPod("src", "curl-abc", map[string]string{"app": "curl"}, true, true),
+	}
+	policy := &securityv1.AuthorizationPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "mesh-deny-echo", Namespace: "istio-system"},
+		Spec: securityapi.AuthorizationPolicy{
+			Selector: &istiotype.WorkloadSelector{MatchLabels: map[string]string{"app": "echo-denied"}},
+			Action:   securityapi.AuthorizationPolicy_DENY,
+			Rules:    []*securityapi.Rule{{}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-denied"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(policy)}
+
+	inspectIstioAuthorizationPolicy(context.Background(), client, report, ServiceOptions{Namespace: "app"}, service, targetPods, source, "http://echo-denied.app.svc.cluster.local/")
+
+	assertResult(t, report, "Istio Authorization Layer", "istio-system/mesh-deny-echo", model.StatusFail)
+	assertDiagnosisContains(t, report, "AuthorizationPolicy \"istio-system/mesh-deny-echo\" denies requests")
 }
 
 func TestInspectIstioAuthorizationPolicyIgnoresDenyWithNoRules(t *testing.T) {
@@ -451,6 +508,32 @@ func TestInspectIstioRequestAuthenticationReportsJWT401(t *testing.T) {
 	assertDiagnosisContains(t, report, "Check JWT issuer/audience/token")
 }
 
+func TestInspectIstioRequestAuthenticationUsesRootNamespacePolicy(t *testing.T) {
+	service := testService("app", "echo-denied")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-denied-abc", map[string]string{"app": "echo-denied"}, true, true),
+	}
+	requestAuth := &securityv1.RequestAuthentication{
+		ObjectMeta: metav1.ObjectMeta{Name: "mesh-jwt", Namespace: "istio-system"},
+		Spec: securityapi.RequestAuthentication{
+			Selector: &istiotype.WorkloadSelector{MatchLabels: map[string]string{"app": "echo-denied"}},
+			JwtRules: []*securityapi.JWTRule{
+				{Issuer: "https://issuer.example"},
+			},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-denied"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(requestAuth)}
+
+	ok := inspectIstioRequestAuthentication(context.Background(), client, report, service, targetPods, model.StatusFail)
+
+	if !ok {
+		t.Fatal("expected root namespace RequestAuthentication pointer")
+	}
+	assertResult(t, report, "Istio JWT Layer", "request authentication", model.StatusFail)
+	assertDiagnosisContains(t, report, "istio-system/mesh-jwt")
+}
+
 func TestInspectIstioSidecarEgressScopeReportsMissingTargetHost(t *testing.T) {
 	service := testService("app", "echo-open")
 	source := &ExecTarget{
@@ -578,6 +661,219 @@ func TestInspectIstioTrafficRoutingReportsBadSubset(t *testing.T) {
 	assertDiagnosisContains(t, report, "no ready backend pods match labels version=v2")
 	assertDiagnosisContains(t, report, "Ready backend pod label values for those keys: version=v1")
 	assertDiagnosisNotContains(t, report, "direct pod")
+}
+
+func TestInspectIstioTrafficRoutingIgnoresGatewayOnlyVirtualService(t *testing.T) {
+	service := testService("app", "echo-bad-subset")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-bad-subset-abc", map[string]string{"app": "echo-bad-subset", "version": "v1"}, true, true),
+	}
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset-gateway", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts:    []string{"echo-bad-subset.app.svc.cluster.local"},
+			Gateways: []string{"app/public-gateway"},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-bad-subset.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:    "echo-bad-subset.app.svc.cluster.local",
+			Subsets: []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-bad-subset"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app"}, service, targetPods, nil, "http://echo-bad-subset.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "could not identify the exact Istio route/subset object")
+	assertDiagnosisNotContains(t, report, "echo-bad-subset-gateway")
+	assertDiagnosisNotContains(t, report, "VirtualService")
+}
+
+func TestInspectIstioTrafficRoutingAllowsVirtualServiceWithMeshGateway(t *testing.T) {
+	service := testService("app", "echo-bad-subset")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-bad-subset-abc", map[string]string{"app": "echo-bad-subset", "version": "v1"}, true, true),
+	}
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts:    []string{"echo-bad-subset.app.svc.cluster.local"},
+			Gateways: []string{"app/public-gateway", "mesh"},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-bad-subset.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:    "echo-bad-subset.app.svc.cluster.local",
+			Subsets: []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-bad-subset"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app"}, service, targetPods, nil, "http://echo-bad-subset.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "VirtualService \"app/echo-bad-subset\"")
+	assertDiagnosisContains(t, report, "no ready backend pods match labels version=v2")
+}
+
+func TestInspectIstioTrafficRoutingRespectsVirtualServiceExportTo(t *testing.T) {
+	service := testService("app", "echo-bad-subset")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-bad-subset-abc", map[string]string{"app": "echo-bad-subset", "version": "v1"}, true, true),
+	}
+	source := &ExecTarget{
+		Kind: "source pod",
+		Pod:  testPod("src", "curl-abc", map[string]string{"app": "curl"}, true, true),
+	}
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset-private", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts:    []string{"echo-bad-subset.app.svc.cluster.local"},
+			ExportTo: []string{"."},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-bad-subset.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:    "echo-bad-subset.app.svc.cluster.local",
+			Subsets: []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-bad-subset"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app", SourceNamespace: "src"}, service, targetPods, source, "http://echo-bad-subset.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "could not identify the exact Istio route/subset object")
+	assertDiagnosisNotContains(t, report, "echo-bad-subset-private")
+	assertDiagnosisNotContains(t, report, "VirtualService")
+}
+
+func TestInspectIstioTrafficRoutingUsesVirtualServiceExportedToSource(t *testing.T) {
+	service := testService("app", "echo-bad-subset")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-bad-subset-abc", map[string]string{"app": "echo-bad-subset", "version": "v1"}, true, true),
+	}
+	source := &ExecTarget{
+		Kind: "source pod",
+		Pod:  testPod("src", "curl-abc", map[string]string{"app": "curl"}, true, true),
+	}
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset-exported", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts:    []string{"echo-bad-subset.app.svc.cluster.local"},
+			ExportTo: []string{"src"},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-bad-subset.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:    "echo-bad-subset.app.svc.cluster.local",
+			Subsets: []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-bad-subset"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app", SourceNamespace: "src"}, service, targetPods, source, "http://echo-bad-subset.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "VirtualService \"app/echo-bad-subset-exported\"")
+	assertDiagnosisContains(t, report, "no ready backend pods match labels version=v2")
+}
+
+func TestInspectIstioTrafficRoutingRespectsDestinationRuleExportTo(t *testing.T) {
+	service := testService("app", "echo-bad-subset")
+	targetPods := []corev1.Pod{
+		testPod("app", "echo-bad-subset-abc", map[string]string{"app": "echo-bad-subset", "version": "v1"}, true, true),
+	}
+	source := &ExecTarget{
+		Kind: "source pod",
+		Pod:  testPod("src", "curl-abc", map[string]string{"app": "curl"}, true, true),
+	}
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts:    []string{"echo-bad-subset.app.svc.cluster.local"},
+			ExportTo: []string{"src"},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-bad-subset.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-bad-subset-private", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:     "echo-bad-subset.app.svc.cluster.local",
+			ExportTo: []string{"."},
+			Subsets:  []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-bad-subset"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app", SourceNamespace: "src"}, service, targetPods, source, "http://echo-bad-subset.app.svc.cluster.local/")
+
+	assertDiagnosisContains(t, report, "could not identify the exact Istio route/subset object")
+	assertDiagnosisNotContains(t, report, "DestinationRule")
+	assertDiagnosisNotContains(t, report, "echo-bad-subset-private")
+}
+
+func TestInspectIstioTrafficRoutingSkipsWhenTargetBackendsAreMissing(t *testing.T) {
+	service := testService("app", "echo-empty")
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-empty", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts: []string{"echo-empty.app.svc.cluster.local"},
+			Http: []*networkingapi.HTTPRoute{
+				{Route: []*networkingapi.HTTPRouteDestination{
+					{Destination: &networkingapi.Destination{Host: "echo-empty.app.svc.cluster.local", Subset: "v2"}},
+				}},
+			},
+		},
+	}
+	destinationRule := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-empty", Namespace: "app"},
+		Spec: networkingapi.DestinationRule{
+			Host:    "echo-empty.app.svc.cluster.local",
+			Subsets: []*networkingapi.Subset{{Name: "v2", Labels: map[string]string{"version": "v2"}}},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-empty"})
+	report.Diagnose("Primary issue: no target pods matched selector \"app=does-not-exist\" in namespace \"app\".")
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService, destinationRule)}
+
+	inspectIstioTrafficRouting(context.Background(), client, report, ServiceOptions{Namespace: "app"}, service, nil, nil, "http://echo-empty.app.svc.cluster.local/")
+
+	assertNoResultLayer(t, report, "Istio Traffic Routing Layer")
+	assertDiagnosisContains(t, report, "no target pods matched selector")
+	assertDiagnosisNotContains(t, report, "Envoy returned no healthy upstream")
+	assertDiagnosisNotContains(t, report, "VirtualService")
 }
 
 func TestInspectIstioTrafficRoutingReportsMatchingRouteNumber(t *testing.T) {
@@ -782,6 +1078,125 @@ func TestInspectIstioWeightedRouteRisksReportsSubsetTLSMismatch(t *testing.T) {
 	assertResult(t, report, "Istio Traffic Routing Layer", "app/echo-open weighted destinations", model.StatusWarn)
 	assertDiagnosisContains(t, report, "subset \"v2\" with weight 50 sets DestinationRule \"src/echo-open\" TLS mode DISABLE")
 	assertDiagnosisContains(t, report, "subset \"v1\" with weight 50 matches ready pods with version=v1")
+}
+
+func TestInspectIstioIntentionalRouteBehaviorReportsDirectResponse(t *testing.T) {
+	service := testService("app", "echo-direct")
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-direct", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts: []string{"echo-direct.app.svc.cluster.local"},
+			Http: []*networkingapi.HTTPRoute{
+				{DirectResponse: &networkingapi.HTTPDirectResponse{Status: 503}},
+			},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-direct"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService)}
+
+	behavior, ok := inspectIstioIntentionalRouteBehavior(context.Background(), client, report, ServiceOptions{Namespace: "app", URLPath: "/"}, service, nil, "http://echo-direct.app.svc.cluster.local/", RuntimeHTTPResult{OK: true, StatusCode: "503"}, map[string]bool{})
+
+	if !ok {
+		t.Fatal("expected direct response diagnosis")
+	}
+	if behavior.RuntimeStatus != model.StatusFail {
+		t.Fatalf("expected FAIL runtime status, got %s", behavior.RuntimeStatus)
+	}
+	assertResult(t, report, "Istio Traffic Routing Layer", "app/echo-direct HTTP route 1", model.StatusFail)
+	assertDiagnosisContains(t, report, "directly returns HTTP 503")
+}
+
+func TestInspectIstioIntentionalRouteBehaviorReportsRedirect(t *testing.T) {
+	service := testService("app", "echo-redirect")
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-redirect", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts: []string{"echo-redirect.app.svc.cluster.local"},
+			Http: []*networkingapi.HTTPRoute{
+				{Redirect: &networkingapi.HTTPRedirect{RedirectCode: 302}},
+			},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-redirect"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService)}
+
+	behavior, ok := inspectIstioIntentionalRouteBehavior(context.Background(), client, report, ServiceOptions{Namespace: "app", URLPath: "/"}, service, nil, "http://echo-redirect.app.svc.cluster.local/", RuntimeHTTPResult{OK: true, StatusCode: "302"}, map[string]bool{})
+
+	if !ok {
+		t.Fatal("expected redirect diagnosis")
+	}
+	if behavior.RuntimeStatus != model.StatusWarn {
+		t.Fatalf("expected WARN runtime status, got %s", behavior.RuntimeStatus)
+	}
+	assertResult(t, report, "Istio Traffic Routing Layer", "app/echo-redirect HTTP route 1", model.StatusWarn)
+	assertDiagnosisContains(t, report, "redirects requests")
+}
+
+func TestInspectIstioIntentionalRouteBehaviorReportsFaultAbort(t *testing.T) {
+	service := testService("app", "echo-abort")
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-abort", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts: []string{"echo-abort.app.svc.cluster.local"},
+			Http: []*networkingapi.HTTPRoute{
+				{
+					Fault: &networkingapi.HTTPFaultInjection{
+						Abort: &networkingapi.HTTPFaultInjection_Abort{
+							ErrorType:  &networkingapi.HTTPFaultInjection_Abort_HttpStatus{HttpStatus: 503},
+							Percentage: &networkingapi.Percent{Value: 50},
+						},
+					},
+				},
+			},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-abort"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService)}
+
+	behavior, ok := inspectIstioIntentionalRouteBehavior(context.Background(), client, report, ServiceOptions{Namespace: "app", URLPath: "/"}, service, nil, "http://echo-abort.app.svc.cluster.local/", RuntimeHTTPResult{OK: true, StatusCode: "503"}, map[string]bool{})
+
+	if !ok {
+		t.Fatal("expected fault abort diagnosis")
+	}
+	if behavior.RuntimeStatus != model.StatusFail {
+		t.Fatalf("expected FAIL runtime status, got %s", behavior.RuntimeStatus)
+	}
+	assertResult(t, report, "Istio Traffic Routing Layer", "app/echo-abort HTTP route 1", model.StatusWarn)
+	assertDiagnosisContains(t, report, "intentionally aborts 50%")
+}
+
+func TestInspectIstioIntentionalRouteBehaviorReportsFaultDelayTimeout(t *testing.T) {
+	service := testService("app", "echo-delay")
+	virtualService := &networkingv1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo-delay", Namespace: "app"},
+		Spec: networkingapi.VirtualService{
+			Hosts: []string{"echo-delay.app.svc.cluster.local"},
+			Http: []*networkingapi.HTTPRoute{
+				{
+					Fault: &networkingapi.HTTPFaultInjection{
+						Delay: &networkingapi.HTTPFaultInjection_Delay{
+							HttpDelayType: &networkingapi.HTTPFaultInjection_Delay_FixedDelay{FixedDelay: &duration.Duration{Seconds: 10}},
+							Percentage:    &networkingapi.Percent{Value: 100},
+						},
+					},
+				},
+			},
+		},
+	}
+	report := model.NewReport("check service", model.Target{Namespace: "app", Service: "echo-delay"})
+	client := &kube.Client{Istio: istiofake.NewSimpleClientset(virtualService)}
+
+	behavior, ok := inspectIstioIntentionalRouteBehavior(context.Background(), client, report, ServiceOptions{Namespace: "app", URLPath: "/"}, service, nil, "http://echo-delay.app.svc.cluster.local/", RuntimeHTTPResult{OK: false, Error: "curl: (28) Operation timed out"}, map[string]bool{})
+
+	if !ok {
+		t.Fatal("expected fault delay diagnosis")
+	}
+	if behavior.RuntimeStatus != model.StatusFail {
+		t.Fatalf("expected FAIL runtime status, got %s", behavior.RuntimeStatus)
+	}
+	assertResult(t, report, "Istio Traffic Routing Layer", "app/echo-delay HTTP route 1", model.StatusFail)
+	assertDiagnosisContains(t, report, "delays 100%")
+	assertDiagnosisContains(t, report, "10s")
 }
 
 func TestInspectIstioTrafficRoutingHonorsHTTPMatchFields(t *testing.T) {
@@ -1397,6 +1812,15 @@ func assertResult(t *testing.T, report *model.Report, layer, check string, statu
 		}
 	}
 	t.Fatalf("missing result %s/%s=%s in %#v", layer, check, status, report.Results)
+}
+
+func assertNoResultLayer(t *testing.T, report *model.Report, layer string) {
+	t.Helper()
+	for _, result := range report.Results {
+		if result.Layer == layer {
+			t.Fatalf("result layer %q should not be present: %#v", layer, report.Results)
+		}
+	}
 }
 
 func assertDiagnosisContains(t *testing.T, report *model.Report, want string) {

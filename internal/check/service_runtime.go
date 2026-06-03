@@ -44,6 +44,7 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 	urls := buildServiceURLs(service, opts.Namespace, opts.Service, opts.URLScheme, opts.URLPath, servicePort)
 	inspectIstioWeightedRouteRisks(ctx, client, report, opts, service, targetPods, source, serviceFQDNURL(service, opts.Namespace, opts.Service, opts.URLScheme, opts.URLPath, servicePort))
 	istioSignalsReported := map[istioRuntimeSignal]bool{}
+	istioIntentionalRoutesReported := map[string]bool{}
 	servicePathSucceeded := false
 	for _, rawURL := range urls {
 		host := hostFromURL(rawURL)
@@ -72,6 +73,11 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 					inspectIstioRuntimeSignal(ctx, client, report, opts, service, targetPods, source, rawURL, result, signal)
 					istioSignalsReported[signal] = true
 				}
+			} else if behavior, ok := inspectIstioIntentionalRouteBehavior(ctx, client, report, opts, service, source, rawURL, result, istioIntentionalRoutesReported); ok {
+				report.Add("Source-to-Target Runtime Layer", rawURL, behavior.RuntimeStatus, fmt.Sprintf("%s %q reached %s, but %s", source.Kind, source.Pod.Name, rawURL, behavior.RuntimeMessage))
+				if behavior.RuntimeStatus != model.StatusFail {
+					servicePathSucceeded = true
+				}
 			} else {
 				report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %s. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, result.StatusCode))
 				servicePathSucceeded = true
@@ -83,6 +89,10 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 				if !hasDiagnosisContaining(report, classification.Summary) {
 					report.Diagnose(fmt.Sprintf("Primary issue: %s for %s from source pod %q. %s", classification.Summary, rawURL, source.Pod.Name, classification.Diagnosis))
 				}
+				continue
+			}
+			if behavior, ok := inspectIstioIntentionalRouteBehavior(ctx, client, report, opts, service, source, rawURL, result, istioIntentionalRoutesReported); ok {
+				report.Add("Source-to-Target Runtime Layer", rawURL, behavior.RuntimeStatus, fmt.Sprintf("%s %q could not complete %s because %s", source.Kind, source.Pod.Name, rawURL, behavior.RuntimeMessage))
 				continue
 			}
 			if inspectIstioMTLSReset(ctx, client, report, service, report.Target.ServicePort, targetPods, source, result) {

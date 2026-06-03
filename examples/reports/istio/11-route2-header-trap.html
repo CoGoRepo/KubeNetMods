@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KubeNetMods Report</title>
+<style>
+:root { color-scheme: dark; --bg:#0b1017; --panel:#151c25; --line:#2b3542; --text:#f4f7fb; --muted:#aab6c5; --fail:#ff5c67; --warn:#f0b84a; --pass:#39d98a; --info:#66aaff; --skip:#a78bfa; }
+body { margin:0; font-family:Segoe UI, system-ui, sans-serif; background:var(--bg); color:var(--text); }
+main { max-width:1180px; margin:0 auto; padding:32px 24px 56px; }
+h1 { margin:0 0 18px; font-size:32px; }
+h2 { margin:28px 0 12px; }
+.grid { display:grid; grid-template-columns:1.2fr .8fr; gap:16px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; }
+.meta { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; }
+.meta div { border:1px solid var(--line); border-radius:6px; padding:10px; color:var(--muted); }
+code { background:#202a36; color:var(--text); border-radius:4px; padding:2px 6px; }
+table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+th, td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+th { color:var(--muted); font-size:13px; }
+tr:last-child td { border-bottom:0; }
+.status { font-weight:700; }
+.PASS { color:var(--pass); } .FAIL { color:var(--fail); } .WARN { color:var(--warn); } .INFO { color:var(--info); } .SKIP { color:var(--skip); }
+.diag { border-left:4px solid var(--fail); }
+.muted { color:var(--muted); }
+@media (max-width: 850px) { .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>KubeNetMods Report</h1>
+<div class="grid">
+  <section class="card diag">
+    <h2>Diagnosis</h2>
+    
+      <ul><li>Primary issue: Istio VirtualService &#34;app/echo-bad-subset&#34; HTTP route 2 matched by header x-canary=&#34;true&#34; routes Service &#34;app/echo-bad-subset&#34; to DestinationRule &#34;app/echo-bad-subset&#34; subset &#34;v2&#34;, but no ready backend pods match labels version=v2. Ready backend pod label values for those keys: version=v1.</li></ul>
+    
+  </section>
+  <section class="card">
+    <h2>Target</h2>
+    <div class="meta">
+      <div>Command<br><code>check service</code></div>
+      <div>Namespace<br><code>app</code></div>
+      <div>Service<br><code>echo-bad-subset</code></div>
+      <div>Deployment<br><code>echo-bad-subset</code></div>
+      <div>Service Port<br><code>80</code></div>
+      <div>Context<br><code>kind-knm-istio</code></div>
+      
+      <div>Source Namespace<br><code>src</code></div>
+      <div>Source Pod<br><code>curl-6b58b4cc84-mw8gq</code></div>
+      <div>Source Selector<br><code>app=curl</code></div>
+      <div>Timestamp<br><code>2026-06-03 10:39:26 CDT</code></div>
+    </div>
+  </section>
+</div>
+<section class="card" style="margin-top:16px">
+  <h2>Summary</h2>
+  <span class="status FAIL">FAIL: 3</span>&nbsp;&nbsp;<span class="status PASS">PASS: 26</span>&nbsp;&nbsp;<span class="status INFO">INFO: 8</span>&nbsp;&nbsp;<span class="status SKIP">SKIP: 2</span>&nbsp;&nbsp;
+</section>
+<h2>Results</h2>
+<table>
+  <thead><tr><th>Layer</th><th>Check</th><th>Status</th><th>Message</th></tr></thead>
+  <tbody><tr><td>Cluster Access</td><td>target namespace</td><td class="status PASS">PASS</td><td>Target namespace &#34;app&#34; exists.</td></tr><tr><td>Cluster Access</td><td>source namespace</td><td class="status PASS">PASS</td><td>Source namespace &#34;src&#34; exists.</td></tr><tr><td>Cluster Health</td><td>node readiness</td><td class="status PASS">PASS</td><td>1/1 node(s) are Ready.</td></tr><tr><td>Cluster Health</td><td>node conditions</td><td class="status PASS">PASS</td><td>No NetworkUnavailable/pressure node conditions detected.</td></tr><tr><td>Cluster Health</td><td>CNI add-ons</td><td class="status PASS">PASS</td><td>3/3 CNI add-ons pod(s) are Ready.</td></tr><tr><td>Cluster Health</td><td>CoreDNS</td><td class="status PASS">PASS</td><td>2/2 CoreDNS pod(s) are Ready.</td></tr><tr><td>Service Layer</td><td>service exists</td><td class="status PASS">PASS</td><td>Service &#34;echo-bad-subset&#34; exists.</td></tr><tr><td>Service Layer</td><td>service details</td><td class="status INFO">INFO</td><td>Type=ClusterIP; ClusterIP=10.98.227.137; ExternalName=; Ports=80-&gt;8080/TCP name=http; Selector=app=echo-bad-subset</td></tr><tr><td>Deployment Layer</td><td>replicas</td><td class="status PASS">PASS</td><td>Deployment &#34;echo-bad-subset&#34; has 1/1 available replica(s).</td></tr><tr><td>Pod Health Layer</td><td>pod selector</td><td class="status INFO">INFO</td><td>Using target pod selector: app=echo-bad-subset</td></tr><tr><td>Pod Health Layer</td><td>pods exist</td><td class="status PASS">PASS</td><td>1 pod(s) found.</td></tr><tr><td>Pod Health Layer</td><td>running</td><td class="status PASS">PASS</td><td>1/1 pod(s) are Running.</td></tr><tr><td>Pod Health Layer</td><td>ready</td><td class="status PASS">PASS</td><td>1/1 pod(s) are Ready.</td></tr><tr><td>Pod Health Layer</td><td>container states</td><td class="status PASS">PASS</td><td>No CrashLoopBackOff/ImagePullBackOff-style waiting reasons detected.</td></tr><tr><td>Endpoint Mapping Layer</td><td>endpoint slices</td><td class="status PASS">PASS</td><td>Ready endpoint IPs: 10.244.0.152</td></tr><tr><td>Endpoint Mapping Layer</td><td>pod to endpoint match</td><td class="status PASS">PASS</td><td>Selected ready pod IPs appear in ready EndpointSlices.</td></tr><tr><td>Service Layer</td><td>selected port</td><td class="status INFO">INFO</td><td>Testing Service port 80/TCP name=http -&gt; targetPort 8080.</td></tr><tr><td>Service Layer</td><td>targetPort metadata</td><td class="status PASS">PASS</td><td>Service targetPort 8080 matches declared container port(s): echo-bad-subset-84f678cf6d-gj8zv/echo:8080/TCP name=(unnamed).</td></tr><tr><td>Source Resolver Layer</td><td>source name</td><td class="status PASS">PASS</td><td>Resolved source &#34;curl&#34; to Deployment &#34;curl&#34;, using pod &#34;curl-6b58b4cc84-mw8gq&#34; phase=Running ready=true.</td></tr><tr><td>NetworkPolicy Layer</td><td>native policies</td><td class="status INFO">INFO</td><td>No native Kubernetes NetworkPolicy objects found in the target/source namespace.</td></tr><tr><td>Cilium Endpoint State</td><td>source endpoint</td><td class="status PASS">PASS</td><td>src/curl-6b58b4cc84-mw8gq state=ready endpointID=1217 identity=28874 ip=10.244.0.252 node=172.18.0.2 serviceAccount=curl</td></tr><tr><td>Cilium Endpoint State</td><td>target endpoints</td><td class="status PASS">PASS</td><td>1/1 selected target pod(s) have CiliumEndpoint state ready. app/echo-bad-subset-84f678cf6d-gj8zv state=ready endpointID=1306 identity=25683 ip=10.244.0.152 node=172.18.0.2 serviceAccount=default</td></tr><tr><td>Cilium Policy Layer</td><td>target policies</td><td class="status INFO">INFO</td><td>No Cilium policy objects were found.</td></tr><tr><td>Cilium Policy Path</td><td>source egress to target</td><td class="status PASS">PASS</td><td>No Cilium egress rules select the source pod.</td></tr><tr><td>Cilium Policy Path</td><td>target ingress from source</td><td class="status PASS">PASS</td><td>No Cilium ingress rules select the target pods.</td></tr><tr><td>Cilium DNS Policy Path</td><td>source DNS egress</td><td class="status PASS">PASS</td><td>No Cilium egress rules select the source pod for DNS traffic.</td></tr><tr><td>MTU Snapshot Layer</td><td>source route to Service ClusterIP</td><td class="status INFO">INFO</td><td>source pod &#34;curl-6b58b4cc84-mw8gq&#34; route to Service ClusterIP 10.98.227.137 uses dev eth0 src 10.244.0.252 interface MTU 1500.</td></tr><tr><td>MTU Snapshot Layer</td><td>source route to target pod</td><td class="status INFO">INFO</td><td>source pod &#34;curl-6b58b4cc84-mw8gq&#34; route to target pod app/echo-bad-subset-84f678cf6d-gj8zv 10.244.0.152 uses dev eth0 src 10.244.0.252 interface MTU 1500.</td></tr><tr><td>Source DNS Layer</td><td>resolv.conf</td><td class="status PASS">PASS</td><td>Runtime nameserver(s): 10.96.0.10; search domains: cluster.local, src.svc.cluster.local, svc.cluster.local</td></tr><tr><td>Source-to-Target DNS Layer</td><td>short name echo-bad-subset</td><td class="status INFO">INFO</td><td>Short name &#34;echo-bad-subset&#34; is source-namespace local. Cross-namespace checks use &#34;echo-bad-subset.app&#34; or the Service ClusterIP.</td></tr><tr><td>Source-to-Target Runtime Layer</td><td>http://echo-bad-subset:80/</td><td class="status SKIP">SKIP</td><td>Skipped short-name curl because source namespace &#34;src&#34; differs from target namespace &#34;app&#34;.</td></tr><tr><td>Source-to-Target DNS Layer</td><td>resolve echo-bad-subset.app.svc.cluster.local</td><td class="status PASS">PASS</td><td>source pod &#34;curl-6b58b4cc84-mw8gq&#34; resolved &#34;echo-bad-subset.app.svc.cluster.local&#34;.</td></tr><tr><td>Source-to-Target Runtime Layer</td><td>http://echo-bad-subset.app.svc.cluster.local:80/</td><td class="status FAIL">FAIL</td><td>source pod &#34;curl-6b58b4cc84-mw8gq&#34; reached http://echo-bad-subset.app.svc.cluster.local:80/, but Envoy returned HTTP 503: no healthy upstream.</td></tr><tr><td>Istio Traffic Routing Layer</td><td>app/echo-bad-subset</td><td class="status FAIL">FAIL</td><td>VirtualService app/echo-bad-subset HTTP route 2 matched by header x-canary=&#34;true&#34; routes Service &#34;echo-bad-subset&#34; to DestinationRule app/echo-bad-subset subset &#34;v2&#34;, but no ready target pods match subset labels version=v2. Ready backend pod label values for those keys: version=v1.</td></tr><tr><td>Source-to-Target Runtime Layer</td><td>http://10.98.227.137:80/</td><td class="status FAIL">FAIL</td><td>source pod &#34;curl-6b58b4cc84-mw8gq&#34; reached http://10.98.227.137:80/, but Envoy returned HTTP 503: no healthy upstream.</td></tr><tr><td>Pod-to-Pod Connectivity Layer</td><td>source pod to echo-bad-subset-84f678cf6d-gj8zv:8080</td><td class="status PASS">PASS</td><td>http://10.244.0.152:8080/ reachable from source pod &#34;curl-6b58b4cc84-mw8gq&#34;. HTTP status: 200</td></tr><tr><td>NodePort And Host Layer</td><td>nodeport</td><td class="status SKIP">SKIP</td><td>Service type is not NodePort/LoadBalancer.</td></tr><tr><td>Events Layer</td><td>app warnings</td><td class="status PASS">PASS</td><td>No recent Warning events found in namespace &#34;app&#34;.</td></tr><tr><td>Events Layer</td><td>src warnings</td><td class="status PASS">PASS</td><td>No recent Warning events found in namespace &#34;src&#34;.</td></tr></tbody>
+</table>
+
+<h2>Limitations</h2>
+<ul><li class="muted">Service checks reason from Kubernetes/CNI objects and runtime exec tests; they do not inspect live dataplane rules or packet traces.</li><li class="muted">Calico/Cilium policy analysis is heuristic and focuses on the tested source-to-Service path.</li></ul>
+
+</main>
+</body>
+</html>

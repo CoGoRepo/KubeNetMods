@@ -10,20 +10,21 @@ import (
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
 	securityv1 "istio.io/client-go/pkg/apis/security/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func inspectIstioRequestAuthentication(ctx context.Context, client *kube.Client, report *model.Report, service *corev1.Service, targetPods []corev1.Pod, status model.Status) bool {
 	if client.Istio == nil || service == nil {
 		return false
 	}
-	items, err := client.Istio.SecurityV1().RequestAuthentications(service.Namespace).List(ctx, metav1.ListOptions{})
+	items, err := listIstioRequestAuthentications(ctx, client, istioTargetPolicyNamespaces(ctx, client, service.Namespace))
 	if err != nil {
 		addIstioListWarning(report, "Istio JWT Layer", "request authentications", err)
-		return false
+		if len(items) == 0 {
+			return false
+		}
 	}
 	var matches []string
-	for _, item := range items.Items {
+	for _, item := range items {
 		if requestAuthenticationSelectsTarget(item, service, targetPods) {
 			matches = append(matches, requestAuthenticationSummary(item))
 		}

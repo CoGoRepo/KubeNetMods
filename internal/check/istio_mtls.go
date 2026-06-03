@@ -45,7 +45,9 @@ func inspectIstioDestinationRuleMTLSMismatch(ctx context.Context, client *kube.C
 	if err != nil {
 		return false
 	}
+	destinationRules = istioServicePathDestinationRules(destinationRules, opts, source)
 	virtualServices, _ := listIstioVirtualServices(ctx, client, istioConfigNamespaces(opts, source))
+	virtualServices = istioServicePathVirtualServices(virtualServices, opts, source)
 	tls, ok := effectiveDestinationRuleTLSModeForRequest(virtualServices, destinationRules, opts, service, source, rawURL, report.Target.ServicePort)
 	if !ok || tls.Mode == networkingapi.ClientTLSSettings_ISTIO_MUTUAL {
 		return false

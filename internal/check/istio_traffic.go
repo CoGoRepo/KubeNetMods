@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/CoGoRepo/KubeNetMods/internal/kube"
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
@@ -19,17 +21,22 @@ func inspectIstioTrafficRouting(ctx context.Context, client *kube.Client, report
 	if client.Istio == nil {
 		return
 	}
+	if hasTargetBackendDiagnosis(report) {
+		return
+	}
 	namespaces := istioConfigNamespaces(opts, source)
 	virtualServices, err := listIstioVirtualServices(ctx, client, namespaces)
 	if err != nil {
 		addIstioListWarning(report, "Istio Traffic Routing Layer", "virtual services", err)
 		return
 	}
+	virtualServices = istioServicePathVirtualServices(virtualServices, opts, source)
 	destinationRules, err := listIstioDestinationRules(ctx, client, namespaces)
 	if err != nil {
 		addIstioListWarning(report, "Istio Traffic Routing Layer", "destination rules", err)
 		return
 	}
+	destinationRules = istioServicePathDestinationRules(destinationRules, opts, source)
 	for _, vs := range virtualServices {
 		if !istioVirtualServiceHostsService(vs, service) {
 			continue
@@ -75,17 +82,22 @@ func inspectIstioWeightedRouteRisks(ctx context.Context, client *kube.Client, re
 	if client.Istio == nil || service == nil || rawURL == "" {
 		return false
 	}
+	if hasTargetBackendDiagnosis(report) {
+		return false
+	}
 	namespaces := istioConfigNamespaces(opts, source)
 	virtualServices, err := listIstioVirtualServices(ctx, client, namespaces)
 	if err != nil {
 		addIstioListWarning(report, "Istio Traffic Routing Layer", "virtual services", err)
 		return false
 	}
+	virtualServices = istioServicePathVirtualServices(virtualServices, opts, source)
 	destinationRules, err := listIstioDestinationRules(ctx, client, namespaces)
 	if err != nil {
 		addIstioListWarning(report, "Istio Traffic Routing Layer", "destination rules", err)
 		return false
 	}
+	destinationRules = istioServicePathDestinationRules(destinationRules, opts, source)
 	peerAuth := effectivePeerAuthenticationForPods(ctx, client, service, opts.ServicePort, targetPods)
 	request := newIstioHTTPRequest(opts, service, source, rawURL)
 	for _, vs := range virtualServices {
@@ -109,6 +121,172 @@ func inspectIstioWeightedRouteRisks(ctx context.Context, client *kube.Client, re
 		}
 	}
 	return false
+}
+
+type istioIntentionalRouteBehavior struct {
+	ID             string
+	RuntimeStatus  model.Status
+	RuntimeMessage string
+	LayerCheck     string
+	LayerStatus    model.Status
+	LayerMessage   string
+	Diagnosis      string
+}
+
+func inspectIstioIntentionalRouteBehavior(ctx context.Context, client *kube.Client, report *model.Report, opts ServiceOptions, service *corev1.Service, source *ExecTarget, rawURL string, result RuntimeHTTPResult, reported map[string]bool) (istioIntentionalRouteBehavior, bool) {
+	if client.Istio == nil || service == nil || rawURL == "" {
+		return istioIntentionalRouteBehavior{}, false
+	}
+	virtualServices, err := listIstioVirtualServices(ctx, client, istioConfigNamespaces(opts, source))
+	if err != nil {
+		addIstioListWarning(report, "Istio Traffic Routing Layer", "virtual services", err)
+		return istioIntentionalRouteBehavior{}, false
+	}
+	virtualServices = istioServicePathVirtualServices(virtualServices, opts, source)
+	request := newIstioHTTPRequest(opts, service, source, rawURL)
+	for _, vs := range virtualServices {
+		if !istioVirtualServiceHostsService(vs, service) {
+			continue
+		}
+		for index, route := range vs.Spec.GetHttp() {
+			matchText, ok := istioHTTPRouteMatchText(route, request)
+			if !ok {
+				continue
+			}
+			behavior, ok := istioIntentionalRouteBehaviorForResult(vs, route, index+1, matchText, service, result)
+			if !ok {
+				continue
+			}
+			if !reported[behavior.ID] {
+				report.Add("Istio Traffic Routing Layer", behavior.LayerCheck, behavior.LayerStatus, behavior.LayerMessage)
+				report.Diagnose(behavior.Diagnosis)
+				reported[behavior.ID] = true
+			}
+			return behavior, true
+		}
+	}
+	return istioIntentionalRouteBehavior{}, false
+}
+
+func istioIntentionalRouteBehaviorForResult(vs *networkingv1.VirtualService, route *networkingapi.HTTPRoute, routeNum int, matchText string, service *corev1.Service, result RuntimeHTTPResult) (istioIntentionalRouteBehavior, bool) {
+	routeText := istioRouteDestination{RouteName: route.GetName(), RouteNum: routeNum, MatchText: matchText}.RouteText()
+	matchSuffix := istioRouteDestination{MatchText: matchText}.MatchSuffix()
+	vsName := vs.Namespace + "/" + vs.Name
+	statusCode := runtimeStatusCode(result)
+	check := vsName + " " + routeText
+	if route.GetDirectResponse() != nil {
+		status := int(route.GetDirectResponse().GetStatus())
+		if status == 0 || statusCode != status || status < 400 {
+			return istioIntentionalRouteBehavior{}, false
+		}
+		return istioIntentionalRouteBehavior{
+			ID:             "direct-response|" + check,
+			RuntimeStatus:  model.StatusFail,
+			RuntimeMessage: fmt.Sprintf("Envoy returned HTTP %d from VirtualService direct response %s.", status, check),
+			LayerCheck:     check,
+			LayerStatus:    model.StatusFail,
+			LayerMessage:   fmt.Sprintf("VirtualService %s %s%s returns a direct HTTP %d response for Service %q.", vsName, routeText, matchSuffix, status, service.Name),
+			Diagnosis:      fmt.Sprintf("Primary issue: Istio VirtualService %q %s%s directly returns HTTP %d for Service %q instead of routing to backend pods.", vsName, routeText, matchSuffix, status, serviceName(service)),
+		}, true
+	}
+	if route.GetRedirect() != nil {
+		redirect := route.GetRedirect()
+		configured := int(redirect.GetRedirectCode())
+		if configured == 0 {
+			configured = 301
+		}
+		if statusCode < 300 || statusCode > 399 {
+			return istioIntentionalRouteBehavior{}, false
+		}
+		statusText := fmt.Sprintf("HTTP %d", configured)
+		if configured != statusCode {
+			statusText = fmt.Sprintf("HTTP %d observed, redirect config defaults/sets HTTP %d", statusCode, configured)
+		}
+		return istioIntentionalRouteBehavior{
+			ID:             "redirect|" + check,
+			RuntimeStatus:  model.StatusWarn,
+			RuntimeMessage: fmt.Sprintf("Envoy returned redirect %s from VirtualService %s.", statusText, check),
+			LayerCheck:     check,
+			LayerStatus:    model.StatusWarn,
+			LayerMessage:   fmt.Sprintf("VirtualService %s %s%s redirects matching requests for Service %q. Observed %s.", vsName, routeText, matchSuffix, service.Name, statusText),
+			Diagnosis:      fmt.Sprintf("Primary issue candidate: Istio VirtualService %q %s%s redirects requests for Service %q. The request is reaching Envoy, but the route intentionally sends a redirect instead of backend traffic.", vsName, routeText, matchSuffix, serviceName(service)),
+		}, true
+	}
+	fault := route.GetFault()
+	if fault == nil {
+		return istioIntentionalRouteBehavior{}, false
+	}
+	if abort := fault.GetAbort(); abort != nil {
+		status := int(abort.GetHttpStatus())
+		percent := istioPercentValue(abort.GetPercentage(), 0)
+		if status > 0 && percent > 0 {
+			percentText := istioPercentText(percent)
+			if statusCode == status {
+				prefix := "Primary issue"
+				layerStatus := model.StatusFail
+				if percent < 100 {
+					prefix = "Primary issue candidate"
+					layerStatus = model.StatusWarn
+				}
+				return istioIntentionalRouteBehavior{
+					ID:             "fault-abort|" + check,
+					RuntimeStatus:  model.StatusFail,
+					RuntimeMessage: fmt.Sprintf("Envoy returned HTTP %d from VirtualService fault abort %s.", status, check),
+					LayerCheck:     check,
+					LayerStatus:    layerStatus,
+					LayerMessage:   fmt.Sprintf("VirtualService %s %s%s aborts %s of matching requests for Service %q with HTTP %d.", vsName, routeText, matchSuffix, percentText, service.Name, status),
+					Diagnosis:      fmt.Sprintf("%s: Istio VirtualService %q %s%s intentionally aborts %s of requests to Service %q with HTTP %d.", prefix, vsName, routeText, matchSuffix, percentText, serviceName(service), status),
+				}, true
+			}
+			if result.OK && percent < 100 {
+				return istioIntentionalRouteBehavior{
+					ID:             "fault-abort-risk|" + check,
+					RuntimeStatus:  model.StatusWarn,
+					RuntimeMessage: fmt.Sprintf("This probe reached the Service, but VirtualService %s fault-aborts %s of matching requests with HTTP %d.", check, percentText, status),
+					LayerCheck:     check,
+					LayerStatus:    model.StatusWarn,
+					LayerMessage:   fmt.Sprintf("VirtualService %s %s%s aborts %s of matching requests for Service %q with HTTP %d. This can cause intermittent failures even when one probe succeeds.", vsName, routeText, matchSuffix, percentText, service.Name, status),
+					Diagnosis:      fmt.Sprintf("Primary issue candidate: Istio VirtualService %q %s%s fault-aborts %s of requests to Service %q with HTTP %d. This can make the path fail intermittently.", vsName, routeText, matchSuffix, percentText, serviceName(service), status),
+				}, true
+			}
+		}
+	}
+	if delay := fault.GetDelay(); delay != nil {
+		percent := istioPercentValue(delay.GetPercentage(), delay.GetPercent())
+		if percent <= 0 {
+			return istioIntentionalRouteBehavior{}, false
+		}
+		delayText := istioDelayText(delay)
+		if result.OK && percent < 100 {
+			return istioIntentionalRouteBehavior{
+				ID:             "fault-delay-risk|" + check,
+				RuntimeStatus:  model.StatusWarn,
+				RuntimeMessage: fmt.Sprintf("This probe reached the Service, but VirtualService %s delays %s of matching requests by %s.", check, istioPercentText(percent), delayText),
+				LayerCheck:     check,
+				LayerStatus:    model.StatusWarn,
+				LayerMessage:   fmt.Sprintf("VirtualService %s %s%s delays %s of matching requests for Service %q by %s. This can cause intermittent slow requests or client timeouts.", vsName, routeText, matchSuffix, istioPercentText(percent), service.Name, delayText),
+				Diagnosis:      fmt.Sprintf("Primary issue candidate: Istio VirtualService %q %s%s delays %s of requests to Service %q by %s. This can make the path intermittently slow or timeout.", vsName, routeText, matchSuffix, istioPercentText(percent), serviceName(service), delayText),
+			}, true
+		}
+		if !result.OK && runtimeLooksLikeTimeout(result) {
+			prefix := "Primary issue"
+			layerStatus := model.StatusFail
+			if percent < 100 {
+				prefix = "Primary issue candidate"
+				layerStatus = model.StatusWarn
+			}
+			return istioIntentionalRouteBehavior{
+				ID:             "fault-delay|" + check,
+				RuntimeStatus:  model.StatusFail,
+				RuntimeMessage: fmt.Sprintf("Probe timed out and VirtualService %s delays %s of matching requests by %s.", check, istioPercentText(percent), delayText),
+				LayerCheck:     check,
+				LayerStatus:    layerStatus,
+				LayerMessage:   fmt.Sprintf("VirtualService %s %s%s delays %s of matching requests for Service %q by %s.", vsName, routeText, matchSuffix, istioPercentText(percent), service.Name, delayText),
+				Diagnosis:      fmt.Sprintf("%s: Istio VirtualService %q %s%s delays %s of requests to Service %q by %s, and the runtime probe timed out.", prefix, vsName, routeText, matchSuffix, istioPercentText(percent), serviceName(service), delayText),
+			}, true
+		}
+	}
+	return istioIntentionalRouteBehavior{}, false
 }
 
 func classifyIstioWeightedDestinations(routeDests []istioRouteDestination, vs *networkingv1.VirtualService, destinationRules []*networkingv1.DestinationRule, service *corev1.Service, targetPods []corev1.Pod, peerAuth effectivePeerAuthentication, servicePort int32) ([]string, []string) {
@@ -340,4 +518,57 @@ func readyPodLabelValuesForKeys(pods []corev1.Pod, subset map[string]string) str
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+func runtimeStatusCode(result RuntimeHTTPResult) int {
+	status, err := strconv.Atoi(strings.TrimSpace(result.StatusCode))
+	if err != nil {
+		return 0
+	}
+	return status
+}
+
+func runtimeLooksLikeTimeout(result RuntimeHTTPResult) bool {
+	text := strings.ToLower(result.Error + " " + result.Output)
+	return strings.Contains(text, "timed out") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "operation timed out") ||
+		strings.Contains(text, "context deadline exceeded")
+}
+
+func istioPercentValue(percent *networkingapi.Percent, legacyPercent int32) float64 {
+	if percent != nil {
+		return percent.GetValue()
+	}
+	if legacyPercent > 0 {
+		return float64(legacyPercent)
+	}
+	return 0
+}
+
+func istioPercentText(percent float64) string {
+	if percent == float64(int64(percent)) {
+		return fmt.Sprintf("%.0f%%", percent)
+	}
+	return fmt.Sprintf("%.2f%%", percent)
+}
+
+func istioDelayText(delay *networkingapi.HTTPFaultInjection_Delay) string {
+	if delay == nil {
+		return "an unspecified delay"
+	}
+	if fixed := delay.GetFixedDelay(); fixed != nil {
+		return istioFormatDuration(time.Duration(fixed.Seconds)*time.Second + time.Duration(fixed.Nanos)*time.Nanosecond)
+	}
+	if exponential := delay.GetExponentialDelay(); exponential != nil {
+		return "exponential delay around " + istioFormatDuration(time.Duration(exponential.Seconds)*time.Second+time.Duration(exponential.Nanos)*time.Nanosecond)
+	}
+	return "an unspecified delay"
+}
+
+func istioFormatDuration(value time.Duration) string {
+	if value <= 0 {
+		return "0s"
+	}
+	return value.String()
 }
