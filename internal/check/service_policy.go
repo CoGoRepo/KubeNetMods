@@ -3,7 +3,6 @@ package check
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"sort"
 	"strings"
 
@@ -12,10 +11,10 @@ import (
 	"github.com/CoGoRepo/KubeNetMods/internal/policy"
 	calicopolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/calico"
 	ciliumpolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/cilium"
+	nativepolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/native"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -162,21 +161,7 @@ func addInsights(report *model.Report, insights []policy.Insight) {
 }
 
 func policyNamesSelectingPods(policies []networkingv1.NetworkPolicy, pods []corev1.Pod) []string {
-	var names []string
-	for _, policy := range policies {
-		selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
-		if err != nil {
-			continue
-		}
-		for _, pod := range pods {
-			if selector.Matches(labels.Set(pod.Labels)) {
-				names = append(names, policy.Name)
-				break
-			}
-		}
-	}
-	sort.Strings(names)
-	return names
+	return nativepolicy.PolicyNamesSelectingPods(policies, pods)
 }
 
 func analyzeNativeEgress(report *model.Report, source corev1.Pod, targetNamespace corev1.Namespace, targets []corev1.Pod, policies []networkingv1.NetworkPolicy, service *corev1.Service, ports []int32) {
@@ -243,116 +228,28 @@ func analyzeNativeIngress(report *model.Report, source corev1.Pod, sourceNamespa
 }
 
 func policySelectsPod(netpol networkingv1.NetworkPolicy, pod corev1.Pod) bool {
-	selector, err := metav1.LabelSelectorAsSelector(&netpol.Spec.PodSelector)
-	if err != nil {
-		return false
-	}
-	return selector.Matches(labels.Set(pod.Labels))
+	return nativepolicy.PolicySelectsPod(netpol, pod)
 }
 
 func hasPolicyType(netpol networkingv1.NetworkPolicy, policyType networkingv1.PolicyType) bool {
-	if len(netpol.Spec.PolicyTypes) == 0 {
-		if policyType == networkingv1.PolicyTypeIngress {
-			return true
-		}
-		if policyType == networkingv1.PolicyTypeEgress {
-			return len(netpol.Spec.Egress) > 0
-		}
-	}
-	for _, current := range netpol.Spec.PolicyTypes {
-		if current == policyType {
-			return true
-		}
-	}
-	return false
+	return nativepolicy.HasPolicyType(netpol, policyType)
 }
 
 func nativeEgressRuleAllows(rule networkingv1.NetworkPolicyEgressRule, targetNamespace corev1.Namespace, targets []corev1.Pod, service *corev1.Service, ports []int32, policyNamespace string) bool {
-	if !nativePortsAllow(rule.Ports, ports) {
-		return false
-	}
-	if len(rule.To) == 0 {
-		return true
-	}
-	clusterIP := ""
-	if service != nil && service.Spec.ClusterIP != "None" {
-		clusterIP = service.Spec.ClusterIP
-	}
-	for _, peer := range rule.To {
-		if clusterIP != "" && ipBlockContains(peer.IPBlock, clusterIP) {
-			return true
-		}
-		for _, pod := range targets {
-			if nativePeerMatchesPod(peer, pod, targetNamespace, policyNamespace) {
-				return true
-			}
-			if pod.Status.PodIP != "" && ipBlockContains(peer.IPBlock, pod.Status.PodIP) {
-				return true
-			}
-		}
-	}
-	return false
+	return nativepolicy.EgressRuleAllows(rule, targetNamespace, targets, service, ports, policyNamespace)
 }
 
 func nativeIngressRuleAllows(rule networkingv1.NetworkPolicyIngressRule, source corev1.Pod, sourceNamespace corev1.Namespace, ports []int32) bool {
-	if !nativePortsAllow(rule.Ports, ports) {
-		return false
-	}
-	if len(rule.From) == 0 {
-		return true
-	}
-	for _, peer := range rule.From {
-		if nativePeerMatchesPod(peer, source, sourceNamespace, "") {
-			return true
-		}
-		if source.Status.PodIP != "" && ipBlockContains(peer.IPBlock, source.Status.PodIP) {
-			return true
-		}
-	}
-	return false
+	return nativepolicy.IngressRuleAllows(rule, source, sourceNamespace, ports)
 }
 
 func nativePeerMatchesPod(peer networkingv1.NetworkPolicyPeer, pod corev1.Pod, namespace corev1.Namespace, policyNamespace string) bool {
-	if peer.NamespaceSelector == nil && peer.PodSelector == nil {
-		return false
-	}
-	if peer.NamespaceSelector != nil {
-		nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
-		if err != nil || !nsSelector.Matches(labels.Set(namespace.Labels)) {
-			return false
-		}
-	} else if policyNamespace != "" && namespace.Name != policyNamespace {
-		return false
-	}
-	if peer.PodSelector != nil {
-		podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-		if err != nil || !podSelector.Matches(labels.Set(pod.Labels)) {
-			return false
-		}
-	}
-	return true
+	return nativepolicy.PeerMatchesPod(peer, pod, namespace, policyNamespace)
 }
 
 func nativePortsAllow(policyPorts []networkingv1.NetworkPolicyPort, ports []int32) bool {
-	if len(policyPorts) == 0 || len(ports) == 0 {
-		return true
-	}
-	for _, policyPort := range policyPorts {
-		if policyPort.Protocol != nil && *policyPort.Protocol != corev1.ProtocolTCP {
-			continue
-		}
-		if policyPort.Port == nil {
-			return true
-		}
-		for _, port := range ports {
-			if policyPort.Port.Type == intstr.Int && int32(policyPort.Port.IntValue()) == port {
-				return true
-			}
-		}
-	}
-	return false
+	return nativepolicy.PortsAllow(policyPorts, ports)
 }
-
 func selectedConnectionPortCandidates(service *corev1.Service, containerPorts []containerPort, requested int32) []int32 {
 	if service == nil || len(service.Spec.Ports) == 0 {
 		return nil
@@ -384,54 +281,20 @@ func selectedConnectionPortCandidates(service *corev1.Service, containerPorts []
 }
 
 func nativePolicyNames(policies []networkingv1.NetworkPolicy) []string {
-	var names []string
-	for _, policy := range policies {
-		names = append(names, policy.Name)
-	}
-	return uniqueStrings(names)
+	return nativepolicy.PolicyNames(policies)
 }
 
 func formatPorts(ports []int32) string {
-	if len(ports) == 0 {
-		return "(unknown)"
-	}
-	var values []string
-	for _, port := range ports {
-		values = append(values, fmt.Sprintf("%d", port))
-	}
-	return strings.Join(values, ", ")
+	return nativepolicy.FormatPorts(ports)
 }
 
 func serviceName(service *corev1.Service) string {
 	if service == nil {
 		return "(unknown service)"
 	}
-	if service.Namespace == "" {
-		return service.Name
-	}
 	return service.Namespace + "/" + service.Name
 }
 
 func ipBlockContains(block *networkingv1.IPBlock, address string) bool {
-	if block == nil || block.CIDR == "" || address == "" {
-		return false
-	}
-	ip, err := netip.ParseAddr(address)
-	if err != nil {
-		return false
-	}
-	prefix, err := netip.ParsePrefix(block.CIDR)
-	if err != nil {
-		return false
-	}
-	if !prefix.Contains(ip) {
-		return false
-	}
-	for _, except := range block.Except {
-		exceptPrefix, err := netip.ParsePrefix(except)
-		if err == nil && exceptPrefix.Contains(ip) {
-			return false
-		}
-	}
-	return true
+	return nativepolicy.IPBlockContains(block, address)
 }

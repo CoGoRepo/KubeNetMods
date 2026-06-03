@@ -11,6 +11,7 @@ import (
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
 	calicopolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/calico"
 	ciliumpolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/cilium"
+	nativepolicy "github.com/CoGoRepo/KubeNetMods/internal/policy/native"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -322,22 +323,7 @@ func addNativeIngressBlockers(rep *model.Report, target corev1.Pod, targetNamesp
 }
 
 func nativeAnyRuleMentionsPort(policies []networkingv1.NetworkPolicy, direction string, ports []int32) bool {
-	for _, netpol := range policies {
-		if direction == "egress" {
-			for _, rule := range netpol.Spec.Egress {
-				if nativePortsAllow(rule.Ports, ports) {
-					return true
-				}
-			}
-			continue
-		}
-		for _, rule := range netpol.Spec.Ingress {
-			if nativePortsAllow(rule.Ports, ports) {
-				return true
-			}
-		}
-	}
-	return false
+	return nativepolicy.AnyRuleMentionsPort(policies, direction, ports)
 }
 
 func podsBySelector(ctx context.Context, client *kube.Client, namespace string, selectorText string) ([]corev1.Pod, error) {
