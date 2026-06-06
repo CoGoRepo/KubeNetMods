@@ -93,11 +93,9 @@ Common shorthand flags:
 
 ## Install
 
-Download a release binary:
+Download a release binary from the releases page:
 
 [https://github.com/CoGoRepo/KubeNetMods/releases](https://github.com/CoGoRepo/KubeNetMods/releases)
-
-Releases are created by GitHub Actions when a `vX.Y.Z` tag is pushed. A normal commit push updates the branch, but does not publish release assets.
 
 Common release artifacts:
 
@@ -399,11 +397,9 @@ Terminal output modes:
 - `--quiet`: print only the inferred diagnosis
 - `--no-terminal` / `--no-term`: print no successful stdout output, useful when writing JSON/HTML for automation
 
-## Examples And Labs
+## Examples
 
 The `examples/` directory contains sample alerts, HTML reports, JSON reports, and demo media. The Istio examples under `examples/reports/istio/` show real `check service` diagnoses for AuthorizationPolicy, RequestAuthentication, VirtualService, DestinationRule, Sidecar, and mTLS failure cases.
-
-The `lab/` directory contains reproducible local manifests and scripts used for live testing KNM behavior.
 
 ## Permissions
 
