@@ -9,6 +9,9 @@ obj/
 *.tmp
 *.log
 
+# Local live-test labs and harnesses
+/lab/
+
 # Curated report exporter and sample reports are source/example content.
 !/Reports/
 !/Reports/**

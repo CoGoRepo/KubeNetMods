@@ -17,7 +17,9 @@ import (
 func PrintText(w io.Writer, r *model.Report) {
 	colors := terminalColors()
 	fmt.Fprintf(w, "KubeNetMods %s\n", r.Command)
-	fmt.Fprintf(w, "Target: %s/%s\n", r.Target.Namespace, r.Target.Service)
+	if target := targetSummary(r.Target); target != "" {
+		fmt.Fprintf(w, "Target: %s\n", target)
+	}
 	if r.Target.Context != "" {
 		fmt.Fprintf(w, "Context: %s\n", r.Target.Context)
 	}
@@ -55,6 +57,49 @@ func PrintText(w io.Writer, r *model.Report) {
 		for _, diag := range r.Diagnoses {
 			fmt.Fprintf(w, " - %s\n", diag.Message)
 		}
+	}
+}
+
+func targetSummary(target model.Target) string {
+	if target.URL != "" {
+		return target.URL
+	}
+	if target.Gateway != "" {
+		return namespacedName(target.GatewayNamespace, target.Gateway)
+	}
+	if target.Route != "" {
+		return namespacedName(target.RouteNamespace, target.Route)
+	}
+	if target.Service != "" {
+		return namespacedName(target.Namespace, target.Service)
+	}
+	if target.GatewayClass != "" {
+		return "GatewayClass/" + target.GatewayClass
+	}
+	if target.Host != "" {
+		return target.Host + target.Path
+	}
+	if target.Namespace != "" {
+		return target.Namespace
+	}
+	return ""
+}
+
+func namespacedName(namespace string, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
+}
+
+func PrintDiagnosis(w io.Writer, r *model.Report) {
+	if len(r.Diagnoses) == 0 {
+		fmt.Fprintln(w, "No dominant diagnosis was inferred.")
+		return
+	}
+	fmt.Fprintln(w, "== Diagnosis ==")
+	for _, diag := range r.Diagnoses {
+		fmt.Fprintf(w, " - %s\n", diag.Message)
 	}
 }
 
@@ -745,10 +790,19 @@ tr:last-child td { border-bottom:0; }
     <h2>Target</h2>
     <div class="meta">
       <div>Command<br><code>{{.Report.Command}}</code></div>
-      <div>Namespace<br><code>{{.Report.Target.Namespace}}</code></div>
-      <div>Service<br><code>{{.Report.Target.Service}}</code></div>
+      {{if .Report.Target.Namespace}}<div>Namespace<br><code>{{.Report.Target.Namespace}}</code></div>{{end}}
+      {{if .Report.Target.Service}}<div>Service<br><code>{{.Report.Target.Service}}</code></div>{{end}}
       {{if .Report.Target.Deployment}}<div>Deployment<br><code>{{.Report.Target.Deployment}}</code></div>{{end}}
       {{if .Report.Target.ServicePort}}<div>Service Port<br><code>{{.Report.Target.ServicePort}}</code></div>{{end}}
+      {{if .Report.Target.GatewayNamespace}}<div>Gateway Namespace<br><code>{{.Report.Target.GatewayNamespace}}</code></div>{{end}}
+      {{if .Report.Target.Gateway}}<div>Gateway<br><code>{{.Report.Target.Gateway}}</code></div>{{end}}
+      {{if .Report.Target.GatewayClass}}<div>GatewayClass<br><code>{{.Report.Target.GatewayClass}}</code></div>{{end}}
+      {{if .Report.Target.RouteNamespace}}<div>Route Namespace<br><code>{{.Report.Target.RouteNamespace}}</code></div>{{end}}
+      {{if .Report.Target.Route}}<div>Route<br><code>{{.Report.Target.Route}}</code></div>{{end}}
+      {{if .Report.Target.Host}}<div>Host<br><code>{{.Report.Target.Host}}</code></div>{{end}}
+      {{if .Report.Target.Path}}<div>Path<br><code>{{.Report.Target.Path}}</code></div>{{end}}
+      {{if .Report.Target.Method}}<div>Method<br><code>{{.Report.Target.Method}}</code></div>{{end}}
+      {{if .Report.Target.URL}}<div>URL<br><code>{{.Report.Target.URL}}</code></div>{{end}}
       {{if .Report.Target.Context}}<div>Context<br><code>{{.Report.Target.Context}}</code></div>{{end}}
       {{if .Report.Target.SourceContext}}<div>Source Context<br><code>{{.Report.Target.SourceContext}}</code></div>{{end}}
       {{if .Report.Target.SourceNS}}<div>Source Namespace<br><code>{{.Report.Target.SourceNS}}</code></div>{{end}}

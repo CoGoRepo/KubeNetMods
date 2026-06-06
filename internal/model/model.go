@@ -13,15 +13,24 @@ const (
 )
 
 type Target struct {
-	Context        string `json:"context,omitempty"`
-	Namespace      string `json:"namespace"`
-	Service        string `json:"service"`
-	Deployment     string `json:"deployment,omitempty"`
-	ServicePort    int32  `json:"servicePort,omitempty"`
-	SourceContext  string `json:"sourceContext,omitempty"`
-	SourceNS       string `json:"sourceNamespace,omitempty"`
-	SourcePod      string `json:"sourcePod,omitempty"`
-	SourceSelector string `json:"sourceSelector,omitempty"`
+	Context          string `json:"context,omitempty"`
+	Namespace        string `json:"namespace,omitempty"`
+	Service          string `json:"service,omitempty"`
+	Deployment       string `json:"deployment,omitempty"`
+	ServicePort      int32  `json:"servicePort,omitempty"`
+	GatewayNamespace string `json:"gatewayNamespace,omitempty"`
+	Gateway          string `json:"gateway,omitempty"`
+	GatewayClass     string `json:"gatewayClass,omitempty"`
+	RouteNamespace   string `json:"routeNamespace,omitempty"`
+	Route            string `json:"route,omitempty"`
+	Host             string `json:"host,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Method           string `json:"method,omitempty"`
+	URL              string `json:"url,omitempty"`
+	SourceContext    string `json:"sourceContext,omitempty"`
+	SourceNS         string `json:"sourceNamespace,omitempty"`
+	SourcePod        string `json:"sourcePod,omitempty"`
+	SourceSelector   string `json:"sourceSelector,omitempty"`
 }
 
 type Result struct {

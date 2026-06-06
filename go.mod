@@ -4,12 +4,14 @@ go 1.26.3
 
 require (
 	github.com/cilium/cilium v1.18.3
+	github.com/golang/protobuf v1.5.4
 	github.com/projectcalico/libcalico-go v1.7.3
 	istio.io/api v1.30.0
 	istio.io/client-go v1.30.0
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
+	sigs.k8s.io/gateway-api v1.5.1
 )
 
 require (
@@ -52,7 +54,6 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
-	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

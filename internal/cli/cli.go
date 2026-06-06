@@ -14,6 +14,14 @@ import (
 	"github.com/CoGoRepo/KubeNetMods/internal/report"
 )
 
+type terminalOutputMode string
+
+const (
+	terminalOutputFull      terminalOutputMode = "full"
+	terminalOutputDiagnosis terminalOutputMode = "diagnosis"
+	terminalOutputNone      terminalOutputMode = "none"
+)
+
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stdout)
@@ -32,6 +40,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runEgress(ctx, args[1:], stdout, stderr)
 	case "ingress":
 		return runIngress(ctx, args[1:], stdout, stderr)
+	case "gateway":
+		return runGateway(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return 0
@@ -60,7 +70,7 @@ func runShow(ctx context.Context, args []string, stdout io.Writer, stderr io.Wri
 func runCheck(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "missing check type")
-		fmt.Fprintln(stderr, "usage: knm check service [options]")
+		fmt.Fprintln(stderr, "usage: knm check <service|ingress|egress|gateway> [options]")
 		return 2
 	}
 	switch args[0] {
@@ -70,6 +80,8 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 		return runEgress(ctx, args[1:], stdout, stderr)
 	case "ingress":
 		return runIngress(ctx, args[1:], stdout, stderr)
+	case "gateway":
+		return runGateway(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown check type %q\n", args[0])
 		return 2
@@ -177,6 +189,7 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	var jsonPath string
 	var htmlPath string
 	var quiet bool
+	var noTerminal bool
 	var wide bool
 	var timeoutSeconds int
 
@@ -199,7 +212,9 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
 	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
 	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
-	fs.BoolVar(&quiet, "quiet", false, "do not print terminal report")
+	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
+	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
+	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
 	fs.BoolVar(&wide, "wide", false, "print detailed blocker cards instead of compact table")
 
 	if err := fs.Parse(args); err != nil {
@@ -217,7 +232,7 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	defer cancel()
 
 	rep, err := check.RunBlockers(runCtx, opts)
-	return finishBlockersReport(rep, err, quiet, wide, jsonPath, htmlPath, stdout, stderr)
+	return finishBlockersReport(rep, err, terminalMode(quiet, noTerminal), wide, jsonPath, htmlPath, stdout, stderr)
 }
 
 func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -229,6 +244,7 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	var jsonPath string
 	var htmlPath string
 	var quiet bool
+	var noTerminal bool
 	var timeoutSeconds int
 	var urls multiFlag
 
@@ -248,7 +264,9 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
 	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
 	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
-	fs.BoolVar(&quiet, "quiet", false, "do not print terminal report")
+	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
+	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
+	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -265,7 +283,7 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	defer cancel()
 
 	rep, err := check.RunEgress(runCtx, opts)
-	return finishReport(rep, err, quiet, jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
 }
 
 func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -277,6 +295,7 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var jsonPath string
 	var htmlPath string
 	var quiet bool
+	var noTerminal bool
 	var timeoutSeconds int
 	var servicePort int
 	var ingressURLs multiFlag
@@ -297,7 +316,9 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
 	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
 	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
-	fs.BoolVar(&quiet, "quiet", false, "do not print terminal report")
+	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
+	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
+	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -316,7 +337,53 @@ func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	defer cancel()
 
 	rep, err := check.RunIngress(runCtx, opts)
-	return finishReport(rep, err, quiet, jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
+}
+
+func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := flag.NewFlagSet("knm check gateway", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { gatewayUsage(stderr) }
+
+	var opts check.GatewayOptions
+	var jsonPath string
+	var htmlPath string
+	var quiet bool
+	var noTerminal bool
+	var timeoutSeconds int
+
+	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
+	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
+	fs.StringVar(&opts.Context, "c", "", "alias for --context")
+	fs.StringVar(&opts.Namespace, "namespace", "", "namespace scope; scans all namespaces when omitted")
+	fs.StringVar(&opts.Namespace, "n", "", "alias for --namespace")
+	fs.StringVar(&opts.GatewayRef, "gateway", "", "Gateway to inspect as name or namespace/name")
+	fs.StringVar(&opts.RouteRef, "route", "", "HTTPRoute to inspect as name or namespace/name")
+	fs.StringVar(&opts.GatewayClass, "gateway-class", "", "GatewayClass filter")
+	fs.IntVar(&opts.Limit, "limit", 50, "maximum problem details to print in scan mode")
+	fs.BoolVar(&opts.Wide, "wide", false, "include healthy scan summaries and extra context")
+	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
+	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
+	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
+	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
+	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
+	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 10
+	}
+	opts.Timeout = time.Duration(timeoutSeconds) * time.Second
+	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout+30*time.Second)
+	defer cancel()
+
+	rep, err := check.RunGateway(runCtx, opts)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
 }
 
 func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -328,6 +395,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var jsonPath string
 	var htmlPath string
 	var quiet bool
+	var noTerminal bool
 	var timeoutSeconds int
 	var servicePort int
 	var headers keyValueFlag
@@ -365,7 +433,9 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "API timeout in seconds")
 	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
 	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
-	fs.BoolVar(&quiet, "quiet", false, "do not print terminal report")
+	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
+	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
+	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -390,7 +460,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	defer cancel()
 
 	rep, err := check.RunService(runCtx, opts)
-	return finishReport(rep, err, quiet, jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
 }
 
 func serviceRunTimeout(perCheck time.Duration) time.Duration {
@@ -438,7 +508,17 @@ func printDiscover(w io.Writer, results []check.DiscoverResult, opts check.Disco
 	}
 }
 
-func finishReport(rep *model.Report, err error, quiet bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
+func terminalMode(quiet bool, noTerminal bool) terminalOutputMode {
+	if noTerminal {
+		return terminalOutputNone
+	}
+	if quiet {
+		return terminalOutputDiagnosis
+	}
+	return terminalOutputFull
+}
+
+func finishReport(rep *model.Report, err error, mode terminalOutputMode, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -447,22 +527,29 @@ func finishReport(rep *model.Report, err error, quiet bool, jsonPath string, htm
 		fmt.Fprintln(stderr, "no report was produced")
 		return 1
 	}
-	if !quiet {
+	switch mode {
+	case terminalOutputFull:
 		report.PrintText(stdout, rep)
+	case terminalOutputDiagnosis:
+		report.PrintDiagnosis(stdout, rep)
 	}
 	if jsonPath != "" {
 		if err := report.WriteJSON(jsonPath, rep); err != nil {
 			fmt.Fprintf(stderr, "write JSON report: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "JSON report written to %s\n", jsonPath)
+		if mode == terminalOutputFull {
+			fmt.Fprintf(stdout, "JSON report written to %s\n", jsonPath)
+		}
 	}
 	if htmlPath != "" {
 		if err := report.WriteHTML(htmlPath, rep); err != nil {
 			fmt.Fprintf(stderr, "write HTML report: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "HTML report written to %s\n", htmlPath)
+		if mode == terminalOutputFull {
+			fmt.Fprintf(stdout, "HTML report written to %s\n", htmlPath)
+		}
 	}
 	if rep.CountByStatus("FAIL") > 0 {
 		return 1
@@ -470,7 +557,7 @@ func finishReport(rep *model.Report, err error, quiet bool, jsonPath string, htm
 	return 0
 }
 
-func finishBlockersReport(rep *model.Report, err error, quiet bool, wide bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
+func finishBlockersReport(rep *model.Report, err error, mode terminalOutputMode, wide bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -479,22 +566,29 @@ func finishBlockersReport(rep *model.Report, err error, quiet bool, wide bool, j
 		fmt.Fprintln(stderr, "no report was produced")
 		return 1
 	}
-	if !quiet {
+	switch mode {
+	case terminalOutputFull:
 		report.PrintBlockers(stdout, rep, wide)
+	case terminalOutputDiagnosis:
+		report.PrintDiagnosis(stdout, rep)
 	}
 	if jsonPath != "" {
 		if err := report.WriteJSON(jsonPath, rep); err != nil {
 			fmt.Fprintf(stderr, "write JSON report: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "JSON report written to %s\n", jsonPath)
+		if mode == terminalOutputFull {
+			fmt.Fprintf(stdout, "JSON report written to %s\n", jsonPath)
+		}
 	}
 	if htmlPath != "" {
 		if err := report.WriteHTML(htmlPath, rep); err != nil {
 			fmt.Fprintf(stderr, "write HTML report: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "HTML report written to %s\n", htmlPath)
+		if mode == terminalOutputFull {
+			fmt.Fprintf(stdout, "HTML report written to %s\n", htmlPath)
+		}
 	}
 	if rep.CountByStatus("FAIL") > 0 {
 		return 1
@@ -600,7 +694,8 @@ func serviceUsage(w io.Writer) {
 			{"--timeout", "seconds", "per-probe/API timeout in seconds"},
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
-			{"--quiet", "", "do not print terminal report"},
+			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
 
@@ -625,7 +720,8 @@ func egressUsage(w io.Writer) {
 			{"--timeout", "seconds", "timeout in seconds"},
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
-			{"--quiet", "", "do not print terminal report"},
+			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
 
@@ -649,7 +745,35 @@ func ingressUsage(w io.Writer) {
 			{"--timeout", "seconds", "timeout in seconds"},
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
-			{"--quiet", "", "do not print terminal report"},
+			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--no-terminal, --no-term", "", "do not print terminal output"},
+		})
+}
+
+func gatewayUsage(w io.Writer) {
+	printCommandHelp(w,
+		"KubeNetMods check gateway",
+		"knm check gateway [options]",
+		[]string{"knm gateway [options]"},
+		[]string{
+			"knm check gateway",
+			"knm check gateway -n apps",
+			"knm check gateway --gateway infra/public",
+			"knm check gateway --route apps/api-route --wide",
+		},
+		[]helpFlag{
+			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
+			{"-n, --namespace", "name", "namespace scope; scans all namespaces when omitted"},
+			{"--gateway", "name|namespace/name", "Gateway filter"},
+			{"--route", "name|namespace/name", "HTTPRoute filter"},
+			{"--gateway-class", "name", "GatewayClass filter"},
+			{"--limit", "count", "maximum problem details to print in scan mode"},
+			{"--wide", "", "include healthy scan summaries and extra context"},
+			{"--timeout", "seconds", "timeout in seconds"},
+			{"--html", "path", "write HTML report"},
+			{"--json", "path", "write JSON report"},
+			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
 
@@ -679,7 +803,8 @@ func blockersUsage(w io.Writer) {
 			{"--timeout", "seconds", "timeout in seconds"},
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
-			{"--quiet", "", "do not print terminal report"},
+			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
 
@@ -723,6 +848,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  knm check service [options]")
 	fmt.Fprintln(w, "  knm check egress [options]")
 	fmt.Fprintln(w, "  knm check ingress [options]")
+	fmt.Fprintln(w, "  knm check gateway [options]")
 	fmt.Fprintln(w, "  knm show blockers [options]")
 	fmt.Fprintln(w, "  knm service [options]")
 	fmt.Fprintln(w)
@@ -732,5 +858,6 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  knm check service --namespace database --target postgres --source-namespace web --source frontend --port 5432 --html report.html")
 	fmt.Fprintln(w, "  knm check egress --source-namespace app --source-selector app=api --url https://example.com")
 	fmt.Fprintln(w, "  knm check ingress --namespace app --service api --ingress-url https://api.example.com")
+	fmt.Fprintln(w, "  knm check gateway")
 	fmt.Fprintln(w, "  knm show blockers --namespace app --pod api-1234 --direction egress --port 5432")
 }
