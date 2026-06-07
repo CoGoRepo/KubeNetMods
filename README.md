@@ -39,6 +39,7 @@ Use it when something should connect, but does not:
 - Istio mesh visibility guardrails for `VirtualService.spec.gateways`, `VirtualService.exportTo`, and `DestinationRule.exportTo` so `check service` focuses on config visible to the tested source-to-Service path
 - Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
 - Gateway API v1 static scans for GatewayClass, Gateway, listener status, HTTPRoute attachment, ReferenceGrant, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
+- Gateway API traffic-intent checks for host/path/method/header matching, listener and HTTPRoute hostname misses, backendRef failures, inactive `weight: 0` backendRefs, and mixed weighted backend paths
 - NodePort and LoadBalancer exposure checks
 - external egress URL checks
 - policy blocker and preflight checks before a pod exists
@@ -318,9 +319,11 @@ Use this when Gateway API objects are involved in external access to an app.
 knm check gateway
 ```
 
-The no-parameter run is a static/status scan. It checks Gateway API v1 objects across the current cluster and reports obvious problems without running external probes or expanding every healthy backend.
+The no-parameter run is a static/status scan. It checks Gateway API v1 objects across the current cluster and reports obvious problems without running external probes or inferring a specific request path.
 
-Useful filters:
+The broad scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute attachment/status, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
+
+Scope filters narrow that scan:
 
 ```powershell
 knm check gateway -n apps
@@ -334,7 +337,27 @@ knm check gateway --gateway infra/public
 knm check gateway --route apps/api-route --wide
 ```
 
-The initial scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute attachment/status, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
+Use traffic intent when you have a specific request host or URL:
+
+```powershell
+knm check gateway --host payments.example.com --path /api
+```
+
+```powershell
+knm check gateway --url https://payments.example.com/api --method POST --header x-canary=true
+```
+
+Traffic-intent mode traces the request through matching Gateway listeners, attached HTTPRoutes, route rules, backendRefs, Services, and EndpointSlices. It can explain request-specific misses that a broad scan cannot see, such as:
+
+- no Gateway listener matching the request host/scheme/port
+- a matched listener with no attached HTTPRoute
+- attached HTTPRoutes with no hostname matching the request host
+- path, method, header, or query matches that do not select a rule
+- hostname typo near-misses for listener and route hostnames
+- a matched backendRef pointing at a missing Service, wrong Service port, missing ReferenceGrant, or no ready endpoints
+- a matched rule that splits the request across healthy and broken weighted backendRefs
+
+`--url` owns scheme, host, port, path, and query. `--method` and `--header` can be combined with `--url`. If you do not use `--url`, provide `--host`; `--path` defaults to `/` and `--method` defaults to `GET`.
 
 ## Show Policy Blockers
 
