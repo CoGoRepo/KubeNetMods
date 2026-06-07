@@ -61,6 +61,7 @@ func TestGatewayScanDiagnosesMissingBackendService(t *testing.T) {
 
 	assertResultContains(t, report, model.StatusFail, "missing/unreadable Service app/missing-api")
 	assertGatewayDiagnosisContains(t, report, "routes to Service app/missing-api")
+	assertGatewayDiagnosisNotContains(t, report, "has unresolved references")
 }
 
 func TestGatewayScanDiagnosesCrossNamespaceBackendWithoutReferenceGrant(t *testing.T) {
@@ -83,6 +84,7 @@ func TestGatewayScanDiagnosesCrossNamespaceBackendWithoutReferenceGrant(t *testi
 
 	assertResultContains(t, report, model.StatusFail, "without a matching ReferenceGrant")
 	assertGatewayDiagnosisContains(t, report, "does not grant that reference")
+	assertGatewayDiagnosisNotContains(t, report, "has unresolved references")
 }
 
 func TestGatewayScanAllowsCrossNamespaceBackendWithReferenceGrant(t *testing.T) {
@@ -126,6 +128,329 @@ func TestGatewayScanDiagnosesMissingTLSSecret(t *testing.T) {
 
 	assertResultContains(t, report, model.StatusFail, "references TLS Secret infra/missing-cert")
 	assertGatewayDiagnosisContains(t, report, "missing or unreadable TLS Secret infra/missing-cert")
+	assertGatewayDiagnosisNotContains(t, report, "is not Programmed")
+	assertGatewayDiagnosisNotContains(t, report, "is not ResolvedRefs")
+}
+
+func TestGatewayScanKeepsRouteStatusDiagnosisWhenNoConcreteBackendCauseExists(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("infra", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testGatewayHTTPRoute("app", "catalog", "infra", "public", []map[string]interface{}{
+				testBackendRef("catalog-api", "", int64(80)),
+			}, "True", "False"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayScan(context.Background(), client, report, GatewayOptions{})
+
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/catalog has unresolved references")
+}
+
+func TestGatewayScanKeepsListenerStatusDiagnosisWhenNoConcreteTLSCauseExists(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayWithListenerStatus("infra", "public", "istio", true, "True", "True", testGatewayListener("https", []map[string]interface{}{
+				{"name": "public-cert"},
+			}), "False", "False"),
+		},
+		[]kruntime.Object{
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "infra", Name: "public-cert"}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayScan(context.Background(), client, report, GatewayOptions{})
+
+	assertGatewayDiagnosisContains(t, report, "Gateway listener infra/public/https is not Programmed")
+	assertGatewayDiagnosisContains(t, report, "Gateway listener infra/public/https is not ResolvedRefs")
+	assertGatewayDiagnosisNotContains(t, report, "missing or unreadable TLS Secret")
+}
+
+func TestGatewayBroadScanDiagnosisMatrix(t *testing.T) {
+	tests := []struct {
+		name           string
+		gatewayObjects []unstructured.Unstructured
+		coreObjects    []kruntime.Object
+		want           []string
+		doNotWant      []string
+	}{
+		{
+			name: "gatewayclass no controller",
+			gatewayObjects: []unstructured.Unstructured{
+				gatewayUnstructured("GatewayClass", "", "istio", map[string]interface{}{
+					"spec":   map[string]interface{}{},
+					"status": map[string]interface{}{"conditions": []interface{}{testGatewayCondition("Accepted", "True", "Accepted", "")}},
+				}),
+			},
+			want: []string{"GatewayClass \"istio\" has no controllerName"},
+		},
+		{
+			name: "gatewayclass rejected",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "False", "InvalidParameters"),
+			},
+			want: []string{"GatewayClass istio is not Accepted: InvalidParameters"},
+		},
+		{
+			name: "gateway missing class name",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayWithoutClassName("edge", "public", testGatewayListener("http", nil)),
+			},
+			want: []string{"Gateway edge/public has no gatewayClassName"},
+		},
+		{
+			name: "gateway missing gatewayclass",
+			gatewayObjects: []unstructured.Unstructured{
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			},
+			want: []string{"Gateway edge/public references GatewayClass \"istio\""},
+		},
+		{
+			name: "gateway not programmed",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "False", testGatewayListener("http", nil)),
+			},
+			want: []string{"Gateway edge/public is not Programmed: False"},
+		},
+		{
+			name: "gateway no address",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", false, "True", "True", testGatewayListener("http", nil)),
+			},
+			want: []string{"Gateway edge/public has no assigned address"},
+		},
+		{
+			name: "gateway no listeners",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				gatewayUnstructured("Gateway", "edge", "public", map[string]interface{}{
+					"spec": map[string]interface{}{"gatewayClassName": "istio"},
+					"status": map[string]interface{}{
+						"conditions": []interface{}{
+							testGatewayCondition("Accepted", "True", "Accepted", ""),
+							testGatewayCondition("Programmed", "True", "Programmed", ""),
+						},
+						"addresses": []interface{}{map[string]interface{}{"value": "10.0.0.20"}},
+					},
+				}),
+			},
+			want: []string{"Gateway edge/public has no listeners"},
+		},
+		{
+			name: "listener conflict",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGatewayWithListenerExtraCondition("edge", "public", "istio", testGatewayListener("http", nil), testGatewayCondition("Conflicted", "True", "HostnameConflict", "hostname overlaps")),
+			},
+			want: []string{"Gateway listener edge/public/http has a listener conflict: HostnameConflict: hostname overlaps"},
+		},
+		{
+			name: "tls cross namespace no grant",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "partner", "istio", true, "True", "True", testGatewayListener("https", []map[string]interface{}{
+					{"name": "partner-cert", "namespace": "certs"},
+				})),
+			},
+			want: []string{"Gateway edge/partner references TLS Secret certs/partner-cert across namespaces"},
+		},
+		{
+			name: "tls missing secret deduped",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGatewayWithListenerStatus("edge", "partner", "istio", true, "True", "True", testGatewayListener("https", []map[string]interface{}{
+					{"name": "partner-cert"},
+				}), "False", "False"),
+			},
+			want:      []string{"Gateway edge/partner references missing or unreadable TLS Secret edge/partner-cert"},
+			doNotWant: []string{"Gateway listener edge/partner/https is not Programmed", "Gateway listener edge/partner/https is not ResolvedRefs"},
+		},
+		{
+			name: "route no parent refs",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGatewayHTTPRouteWithRules("app", "payments", nil, []map[string]interface{}{
+					{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+				}),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments is not attached to any Gateway"},
+		},
+		{
+			name: "route missing parent gateway",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, "True", "True"),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments references Gateway edge/public"},
+		},
+		{
+			name: "route no parent status",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRouteNoStatus("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments has no parent status"},
+		},
+		{
+			name: "route rejected",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, "False", "True"),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments is not accepted by Gateway edge/public"},
+		},
+		{
+			name: "route unresolved refs kept without concrete cause",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, "True", "False"),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments has unresolved references"},
+		},
+		{
+			name: "route partially invalid",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRouteWithParentCondition("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, testGatewayCondition("PartiallyInvalid", "True", "UnsupportedValue", "some rules are invalid")),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments is partially invalid"},
+		},
+		{
+			name: "rule no backend refs",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRouteWithRules("app", "payments", []map[string]interface{}{{"name": "public", "namespace": "edge"}}, []map[string]interface{}{{}}),
+			},
+			want: []string{"HTTPRoute app/payments rule 1 has no backendRefs"},
+		},
+		{
+			name: "backend ref no name",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					{"port": int64(80)},
+				}, "True", "True"),
+			},
+			want: []string{"HTTPRoute app/payments rule 1 has a backendRef with no name"},
+		},
+		{
+			name: "backend ref no numeric port",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					{"name": "payments-api"},
+				}, "True", "True"),
+			},
+			want: []string{"HTTPRoute app/payments backendRef app/payments-api does not specify a Service port"},
+		},
+		{
+			name: "backend missing service deduped",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, "True", "False"),
+			},
+			want:      []string{"HTTPRoute app/payments routes to Service app/payments-api, but that Service is missing or unreadable"},
+			doNotWant: []string{"HTTPRoute app/payments has unresolved references"},
+		},
+		{
+			name: "backend wrong service port",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "orders", "edge", "public", []map[string]interface{}{
+					testBackendRef("orders-api", "", int64(9999)),
+				}, "True", "True"),
+			},
+			coreObjects: []kruntime.Object{testGatewayService("app", "orders-api", 80)},
+			want:        []string{"HTTPRoute app/orders routes to Service app/orders-api port 9999"},
+		},
+		{
+			name: "backend no ready endpoints",
+			gatewayObjects: []unstructured.Unstructured{
+				testGatewayClass("istio", "True", "Accepted"),
+				testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+				testGatewayHTTPRoute("app", "payments", "edge", "public", []map[string]interface{}{
+					testBackendRef("payments-api", "", int64(80)),
+				}, "True", "True"),
+			},
+			coreObjects: []kruntime.Object{
+				testGatewayService("app", "payments-api", 80),
+				testGatewayEndpointSlice("app", "payments-api", false, "10.0.0.10"),
+			},
+			want: []string{"HTTPRoute app/payments routes to Service app/payments-api port 80, but that Service has no ready endpoints"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := fakeGatewayClient(t, tt.gatewayObjects, tt.coreObjects)
+			report := model.NewReport("check gateway", model.Target{})
+
+			runGatewayScan(context.Background(), client, report, GatewayOptions{})
+
+			t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+			for _, want := range tt.want {
+				assertGatewayDiagnosisContains(t, report, want)
+			}
+			for _, unwanted := range tt.doNotWant {
+				assertGatewayDiagnosisNotContains(t, report, unwanted)
+			}
+		})
+	}
 }
 
 func TestGatewayRouteFilterSkipsUnrelatedGatewayProblems(t *testing.T) {
@@ -152,6 +477,173 @@ func TestGatewayRouteFilterSkipsUnrelatedGatewayProblems(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "Service app/api port 9999")
 	assertGatewayDiagnosisNotContains(t, report, "broken-tls")
 	assertGatewayDiagnosisNotContains(t, report, "missing-cert")
+}
+
+func TestGatewayNamespaceScanResolvesCrossNamespaceRouteParents(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testGateway("edge", "partner", "istio", true, "True", "True", testGatewayListener("https", []map[string]interface{}{
+				{"name": "partner-cert"},
+			})),
+			testGatewayHTTPRoute("app", "catalog", "edge", "public", []map[string]interface{}{
+				testBackendRef("catalog-api", "", int64(80)),
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayScan(context.Background(), client, report, GatewayOptions{Namespace: "app"})
+
+	assertGatewayDiagnosisNotContains(t, report, "Gateway edge/public was not found")
+	assertGatewayDiagnosisNotContains(t, report, "partner-cert")
+	if report.CountByStatus(model.StatusFail) != 0 {
+		t.Fatalf("expected namespace scan to avoid cross-namespace parent false positives, got %#v", report.Results)
+	}
+}
+
+func TestGatewayHostnameMatches(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		host    string
+		want    bool
+	}{
+		{name: "exact", pattern: "payments.knm.local", host: "payments.knm.local", want: true},
+		{name: "case insensitive", pattern: "Payments.KNM.Local", host: "payments.knm.local.", want: true},
+		{name: "single label wildcard", pattern: "*.knm.local", host: "payments.knm.local", want: true},
+		{name: "wildcard does not match zone root", pattern: "*.knm.local", host: "knm.local", want: false},
+		{name: "wildcard does not match multiple labels", pattern: "*.knm.local", host: "deep.payments.knm.local", want: false},
+		{name: "empty pattern matches unknown host", pattern: "", host: "payments.knm.local", want: true},
+		{name: "empty host keeps static scans broad", pattern: "payments.knm.local", host: "", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayHostnameMatches(tt.pattern, tt.host); got != tt.want {
+				t.Fatalf("gatewayHostnameMatches(%q, %q) = %v, want %v", tt.pattern, tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGatewayHTTPRouteRuleMatchesPathMethodHeadersAndQuery(t *testing.T) {
+	rule := map[string]interface{}{
+		"matches": []interface{}{map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":  "PathPrefix",
+				"value": "/api",
+			},
+			"method": "GET",
+			"headers": []interface{}{map[string]interface{}{
+				"name":  "x-canary",
+				"value": "true",
+			}},
+			"queryParams": []interface{}{map[string]interface{}{
+				"name":  "version",
+				"value": "v1",
+			}},
+		}},
+	}
+
+	intent := gatewayTrafficIntent{
+		Path:    "/api/items",
+		Method:  "get",
+		Headers: map[string]string{"X-Canary": "true"},
+		Query:   map[string][]string{"version": {"v1"}},
+	}
+	if !gatewayHTTPRouteRuleMatches(rule, intent) {
+		t.Fatal("expected route rule to match full request intent")
+	}
+	intent.Path = "/apiv2"
+	if gatewayHTTPRouteRuleMatches(rule, intent) {
+		t.Fatal("PathPrefix /api should not match /apiv2")
+	}
+}
+
+func TestGatewayHTTPRouteRuleMatchesExactAndRegex(t *testing.T) {
+	exact := map[string]interface{}{"matches": []interface{}{map[string]interface{}{
+		"path": map[string]interface{}{"type": "Exact", "value": "/api"},
+	}}}
+	if !gatewayHTTPRouteRuleMatches(exact, gatewayTrafficIntent{Path: "/api"}) {
+		t.Fatal("expected exact path to match")
+	}
+	if gatewayHTTPRouteRuleMatches(exact, gatewayTrafficIntent{Path: "/api/items"}) {
+		t.Fatal("exact path should not match child path")
+	}
+
+	regex := map[string]interface{}{"matches": []interface{}{map[string]interface{}{
+		"path": map[string]interface{}{"type": "RegularExpression", "value": "^/v[0-9]+/items$"},
+	}}}
+	if !gatewayHTTPRouteRuleMatches(regex, gatewayTrafficIntent{Path: "/v2/items"}) {
+		t.Fatal("expected regex path to match")
+	}
+	if gatewayHTTPRouteRuleMatches(regex, gatewayTrafficIntent{Path: "/v2/orders"}) {
+		t.Fatal("regex path should not match different path")
+	}
+}
+
+func TestGatewayFindCandidatePaths(t *testing.T) {
+	gateway := testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("web", nil))
+	gateway.Object["spec"].(map[string]interface{})["listeners"].([]interface{})[0].(map[string]interface{})["hostname"] = "*.knm.local"
+	route := testGatewayHTTPRouteWithRules("app", "payments", []map[string]interface{}{
+		{"name": "public", "namespace": "edge", "sectionName": "web"},
+	}, []map[string]interface{}{
+		{
+			"matches": []interface{}{map[string]interface{}{
+				"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"},
+			}},
+			"backendRefs": []interface{}{
+				testBackendRef("payments-api", "", int64(80)),
+				map[string]interface{}{"name": "orders-api", "port": int64(80), "weight": int64(20)},
+			},
+		},
+	})
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"payments.knm.local"}
+
+	matches := gatewayFindCandidatePaths(
+		[]unstructured.Unstructured{gateway},
+		[]unstructured.Unstructured{route},
+		gatewayTrafficIntent{Scheme: "http", Host: "payments.knm.local", Port: 80, Path: "/api/items"},
+	)
+
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 candidate backend paths, got %#v", matches)
+	}
+	first := matches[0]
+	if first.GatewayNamespace != "edge" || first.GatewayName != "public" || first.ListenerName != "web" {
+		t.Fatalf("unexpected gateway match: %#v", first)
+	}
+	if first.RouteNamespace != "app" || first.RouteName != "payments" || first.RuleNumber != 1 || first.BackendNumber != 1 {
+		t.Fatalf("unexpected route/backend match: %#v", first)
+	}
+	if first.BackendNamespace != "app" || first.BackendName != "payments-api" || first.BackendPort != 80 || first.BackendWeight != 1 {
+		t.Fatalf("unexpected backend details: %#v", first)
+	}
+}
+
+func TestGatewayFindCandidatePathsHonorsListenerAndRouteHostnames(t *testing.T) {
+	gateway := testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("web", nil))
+	gateway.Object["spec"].(map[string]interface{})["listeners"].([]interface{})[0].(map[string]interface{})["hostname"] = "*.knm.local"
+	route := testGatewayHTTPRouteWithRules("app", "payments", []map[string]interface{}{
+		{"name": "public", "namespace": "edge", "sectionName": "web"},
+	}, []map[string]interface{}{
+		{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+	})
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"payments.knm.local"}
+
+	matches := gatewayFindCandidatePaths(
+		[]unstructured.Unstructured{gateway},
+		[]unstructured.Unstructured{route},
+		gatewayTrafficIntent{Scheme: "http", Host: "orders.knm.local", Port: 80, Path: "/"},
+	)
+	if len(matches) != 0 {
+		t.Fatalf("expected host mismatch to remove candidates, got %#v", matches)
+	}
 }
 
 func fakeGatewayClient(t *testing.T, gatewayObjects []unstructured.Unstructured, coreObjects []kruntime.Object) *kube.Client {
@@ -207,6 +699,10 @@ func testGatewayClass(name, acceptedStatus, reason string) unstructured.Unstruct
 }
 
 func testGateway(namespace, name, class string, hasAddress bool, acceptedStatus, programmedStatus string, listener map[string]interface{}) unstructured.Unstructured {
+	return testGatewayWithListenerStatus(namespace, name, class, hasAddress, acceptedStatus, programmedStatus, listener, "True", "True")
+}
+
+func testGatewayWithListenerStatus(namespace, name, class string, hasAddress bool, acceptedStatus, programmedStatus string, listener map[string]interface{}, listenerProgrammedStatus, listenerResolvedRefsStatus string) unstructured.Unstructured {
 	listenerName, _ := listener["name"].(string)
 	status := map[string]interface{}{
 		"conditions": []interface{}{
@@ -218,8 +714,8 @@ func testGateway(namespace, name, class string, hasAddress bool, acceptedStatus,
 				"name": listenerName,
 				"conditions": []interface{}{
 					testGatewayCondition("Accepted", "True", "Accepted", ""),
-					testGatewayCondition("Programmed", "True", "Programmed", ""),
-					testGatewayCondition("ResolvedRefs", "True", "ResolvedRefs", ""),
+					testGatewayCondition("Programmed", listenerProgrammedStatus, "Programmed", ""),
+					testGatewayCondition("ResolvedRefs", listenerResolvedRefsStatus, "ResolvedRefs", ""),
 				},
 			},
 		},
@@ -234,6 +730,20 @@ func testGateway(namespace, name, class string, hasAddress bool, acceptedStatus,
 		},
 		"status": status,
 	})
+}
+
+func testGatewayWithListenerExtraCondition(namespace, name, class string, listener map[string]interface{}, extraCondition map[string]interface{}) unstructured.Unstructured {
+	gateway := testGateway(namespace, name, class, true, "True", "True", listener)
+	statusListeners := gateway.Object["status"].(map[string]interface{})["listeners"].([]interface{})
+	conditions := statusListeners[0].(map[string]interface{})["conditions"].([]interface{})
+	statusListeners[0].(map[string]interface{})["conditions"] = append(conditions, extraCondition)
+	return gateway
+}
+
+func testGatewayWithoutClassName(namespace, name string, listener map[string]interface{}) unstructured.Unstructured {
+	gateway := testGateway(namespace, name, "istio", true, "True", "True", listener)
+	delete(gateway.Object["spec"].(map[string]interface{}), "gatewayClassName")
+	return gateway
 }
 
 func testGatewayListener(name string, certRefs []map[string]interface{}) map[string]interface{} {
@@ -278,6 +788,52 @@ func testGatewayHTTPRoute(namespace, name, gatewayNamespace, gatewayName string,
 			}},
 		},
 	})
+}
+
+func testGatewayHTTPRouteNoStatus(namespace, name, gatewayNamespace, gatewayName string, backendRefs []map[string]interface{}) unstructured.Unstructured {
+	route := testGatewayHTTPRoute(namespace, name, gatewayNamespace, gatewayName, backendRefs, "True", "True")
+	delete(route.Object, "status")
+	return route
+}
+
+func testGatewayHTTPRouteWithParentCondition(namespace, name, gatewayNamespace, gatewayName string, backendRefs []map[string]interface{}, extraCondition map[string]interface{}) unstructured.Unstructured {
+	route := testGatewayHTTPRoute(namespace, name, gatewayNamespace, gatewayName, backendRefs, "True", "True")
+	parents := route.Object["status"].(map[string]interface{})["parents"].([]interface{})
+	conditions := parents[0].(map[string]interface{})["conditions"].([]interface{})
+	parents[0].(map[string]interface{})["conditions"] = append(conditions, extraCondition)
+	return route
+}
+
+func testGatewayHTTPRouteWithRules(namespace, name string, parentRefs []map[string]interface{}, rules []map[string]interface{}) unstructured.Unstructured {
+	var parents []interface{}
+	for _, ref := range parentRefs {
+		parents = append(parents, ref)
+	}
+	var routeRules []interface{}
+	for _, rule := range rules {
+		routeRules = append(routeRules, rule)
+	}
+	fields := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"parentRefs": parents,
+			"rules":      routeRules,
+		},
+	}
+	if len(parentRefs) > 0 {
+		parentRef := parentRefs[0]
+		parentName := stringField(parentRef, "name")
+		parentNamespace := defaultString(stringField(parentRef, "namespace"), namespace)
+		fields["status"] = map[string]interface{}{
+			"parents": []interface{}{map[string]interface{}{
+				"parentRef": map[string]interface{}{"name": parentName, "namespace": parentNamespace},
+				"conditions": []interface{}{
+					testGatewayCondition("Accepted", "True", "Accepted", ""),
+					testGatewayCondition("ResolvedRefs", "True", "ResolvedRefs", ""),
+				},
+			}},
+		}
+	}
+	return gatewayUnstructured("HTTPRoute", namespace, name, fields)
 }
 
 func testBackendRef(name, namespace string, port int64) map[string]interface{} {
@@ -381,4 +937,15 @@ func assertGatewayDiagnosisNotContains(t *testing.T, report *model.Report, unwan
 			t.Fatalf("diagnosis should not contain %q: %q", unwanted, diagnosis.Message)
 		}
 	}
+}
+
+func gatewayDiagnosisLog(report *model.Report) string {
+	if len(report.Diagnoses) == 0 {
+		return "(none)"
+	}
+	var lines []string
+	for _, diagnosis := range report.Diagnoses {
+		lines = append(lines, "- "+diagnosis.Message)
+	}
+	return strings.Join(lines, "\n")
 }

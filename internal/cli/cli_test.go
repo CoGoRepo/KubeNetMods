@@ -64,3 +64,18 @@ func TestFinishReportTerminalModes(t *testing.T) {
 		})
 	}
 }
+
+func TestFinishReportQuietNoDiagnosisIsSilent(t *testing.T) {
+	rep := model.NewReport("check gateway", model.Target{})
+	rep.Add("Gateway API Scan", "obvious problems", model.StatusPass, "No obvious Gateway API problems found.")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := finishReport(rep, nil, terminalOutputDiagnosis, "", "", &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("finishReport returned %d, stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}

@@ -94,7 +94,6 @@ func namespacedName(namespace string, name string) string {
 
 func PrintDiagnosis(w io.Writer, r *model.Report) {
 	if len(r.Diagnoses) == 0 {
-		fmt.Fprintln(w, "No dominant diagnosis was inferred.")
 		return
 	}
 	fmt.Fprintln(w, "== Diagnosis ==")
