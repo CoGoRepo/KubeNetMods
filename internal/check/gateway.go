@@ -29,20 +29,21 @@ var (
 )
 
 type GatewayOptions struct {
-	Context      string
-	Namespace    string
-	GatewayRef   string
-	RouteRef     string
-	GatewayClass string
-	URL          string
-	Host         string
-	Scheme       string
-	Path         string
-	Method       string
-	HTTPHeaders  map[string]string
-	Limit        int
-	Wide         bool
-	Timeout      time.Duration
+	Context       string
+	Namespace     string
+	GatewayRef    string
+	RouteRef      string
+	GatewayClass  string
+	URL           string
+	Host          string
+	Scheme        string
+	Path          string
+	Method        string
+	HTTPHeaders   map[string]string
+	ExpectService string
+	Limit         int
+	Wide          bool
+	Timeout       time.Duration
 }
 
 func RunGateway(ctx context.Context, opts GatewayOptions) (*model.Report, error) {
@@ -78,6 +79,13 @@ func RunGateway(ctx context.Context, opts GatewayOptions) (*model.Report, error)
 		report.Target.Host = intent.Host
 		report.Target.Path = intent.Path
 		report.Target.Method = intent.Method
+	}
+	if strings.TrimSpace(opts.ExpectService) != "" {
+		if _, err := parseGatewayServiceRef(opts.ExpectService); err != nil {
+			report.Add("Gateway Traffic Intent", "options", model.StatusFail, err.Error())
+			report.Diagnose(err.Error())
+			return report, nil
+		}
 	}
 
 	client, err := kube.New(opts.Context)
@@ -236,7 +244,8 @@ func gatewayTrafficIntentFromOptions(opts GatewayOptions) (gatewayTrafficIntent,
 		strings.TrimSpace(opts.Scheme) != "" ||
 		strings.TrimSpace(opts.Path) != "" ||
 		strings.TrimSpace(opts.Method) != "" ||
-		len(opts.HTTPHeaders) > 0
+		len(opts.HTTPHeaders) > 0 ||
+		strings.TrimSpace(opts.ExpectService) != ""
 	if !hasURL && !hasPartialIntent {
 		return gatewayTrafficIntent{}, false, nil
 	}
@@ -310,6 +319,7 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 	routeNoParents := map[string]bool{}
 	routeRejected := map[string]bool{}
 	gatewayConcrete := map[string]bool{}
+	trafficTLSConcrete := false
 	for _, diagnosis := range report.Diagnoses {
 		message := diagnosis.Message
 		if route := gatewayDiagnosisHTTPRoute(message); route != "" && gatewayDiagnosisIsConcreteRouteBackend(message) {
@@ -323,6 +333,9 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 		}
 		if gateway := gatewayDiagnosisGateway(message); gateway != "" && gatewayDiagnosisIsConcreteGatewayTLS(message) {
 			gatewayConcrete[gateway] = true
+		}
+		if gatewayDiagnosisIsConcreteTrafficTLS(message) {
+			trafficTLSConcrete = true
 		}
 	}
 	var kept []model.Diagnosis
@@ -338,6 +351,12 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 			continue
 		}
 		if gateway := gatewayDiagnosisListenerGateway(message); gateway != "" && gatewayConcrete[gateway] && gatewayDiagnosisIsListenerStatus(message) {
+			continue
+		}
+		if trafficTLSConcrete && gatewayDiagnosisIsTrafficTLSStatus(message) {
+			continue
+		}
+		if trafficTLSConcrete && strings.HasPrefix(message, "Gateway listener(s) matched ") && strings.Contains(message, "but no HTTPRoute attaches to them") {
 			continue
 		}
 		kept = append(kept, diagnosis)
@@ -419,6 +438,19 @@ func gatewayDiagnosisIsListenerStatus(message string) bool {
 	return strings.HasPrefix(message, "Gateway listener ") &&
 		(strings.Contains(message, " is not Programmed:") ||
 			strings.Contains(message, " is not ResolvedRefs:"))
+}
+
+func gatewayDiagnosisIsConcreteTrafficTLS(message string) bool {
+	return strings.HasPrefix(message, "HTTPS request matched Gateway listener ") &&
+		strings.Contains(message, "TLS Secret ") &&
+		(strings.Contains(message, "missing or unreadable") ||
+			strings.Contains(message, "without a matching ReferenceGrant"))
+}
+
+func gatewayDiagnosisIsTrafficTLSStatus(message string) bool {
+	return strings.HasPrefix(message, "HTTPS request matched Gateway listener ") &&
+		(strings.Contains(message, "listener is not Programmed:") ||
+			strings.Contains(message, "references are not resolved:"))
 }
 
 func (s *gatewayScanner) addFilterMissProblems() {
@@ -713,7 +745,8 @@ func (s *gatewayScanner) scanHTTPRouteBackendRefWithDiagnosis(ctx context.Contex
 	backendText := fmt.Sprintf("%s/%s", namespace, name)
 	check := fmt.Sprintf("%s rule %d backend %d %s", routeName, ruleNumber, backendNumber, backendText)
 	if group != "" || kind != "Service" {
-		s.addProblem("BackendRef Layer", check, model.StatusWarn, fmt.Sprintf("HTTPRoute %s rule %d backendRef %d points at %s/%s %s. KNM only validates core Service backendRefs right now.", routeName, ruleNumber, backendNumber, group, kind, backendText), "")
+		message := fmt.Sprintf("HTTPRoute %s rule %d routes to backend kind %s %s; KNM does not evaluate that backend type.", routeName, ruleNumber, gatewayBackendKindText(group, kind), backendText)
+		s.addProblem("BackendRef Layer", check, model.StatusWarn, message, gatewayOptionalDiagnosis(addDiagnosis, message))
 		return
 	}
 	if namespace != route.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, "HTTPRoute", route.GetNamespace(), "", "Service", name, namespace) {
@@ -766,19 +799,33 @@ func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *k
 	listeners := gatewayTrafficMatchingListeners(scopedParentGateways, intent)
 	attachedRoutes := gatewayTrafficAttachedRoutes(scopedRoutes, listeners)
 	s.addGatewayTrafficScope(intent, listeners, attachedRoutes)
+	s.addGatewayTrafficTLSDetails(ctx, client, listeners, refGrants)
+	ruleMatches := gatewayFindRuleMatches(scopedParentGateways, scopedRoutes, intent)
 	matches := gatewayFindCandidatePaths(scopedParentGateways, scopedRoutes, intent)
+	selectedRules := gatewaySelectPrecedenceRules(ruleMatches)
+	s.addGatewayTrafficRuleContext(ruleMatches, selectedRules)
+	if len(selectedRules) > 0 {
+		matches = gatewayFilterMatchesToSelectedRules(matches, selectedRules)
+	}
 	s.scannedGate = len(scopedGateways)
 	s.scannedRoutes = len(scopedRoutes)
 	intentText := gatewayTrafficIntentText(intent)
 	if len(matches) == 0 {
+		if redirect := gatewayFirstRedirectRule(defaultGatewayRuleMatches(selectedRules, ruleMatches)); redirect != nil {
+			message := fmt.Sprintf("HTTPRoute %s/%s rule %d redirects this request instead of routing to backendRefs.", redirect.RouteNamespace, redirect.RouteName, redirect.RuleNumber)
+			s.addProblem("Gateway Traffic Intent", "redirect", model.StatusFail, message, message)
+			return
+		}
 		reason := gatewayExplainNoTrafficMatch(scopedParentGateways, scopedRoutes, intent)
 		s.addProblem("Gateway Traffic Intent", "route match", model.StatusFail, reason.Message, reason.Diagnosis)
 		return
 	}
+	s.addGatewayExpectedServiceCheck(matches)
 	routeIndex := map[string]unstructured.Unstructured{}
 	for _, route := range scopedRoutes {
 		routeIndex[objectRefText(route)] = route
 	}
+	s.addGatewaySelectedRuleFilterDetails(ctx, client, routeIndex, selectedRules, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache, intent)
 	reported := map[string]bool{}
 	backendAnalyses := map[string]gatewayBackendRefAnalysis{}
 	groupAnalyses := map[string][]gatewayBackendRefAnalysis{}
@@ -828,9 +875,235 @@ func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *k
 		s.report.Add("Gateway Traffic Path", analyses[0].RouteName+" rule "+strconv.Itoa(analyses[0].RuleNumber)+" weighted backendRefs", model.StatusWarn, message)
 		s.report.Diagnose(message)
 	}
-	if s.report.CountByStatus(model.StatusFail) == 0 {
+	if s.report.CountByStatus(model.StatusFail) == 0 && s.report.CountByStatus(model.StatusWarn) == 0 {
 		s.report.Add("Gateway Traffic Path", "matched backends", model.StatusPass, fmt.Sprintf("%d matching backend path(s) found for %s, and no obvious backend reference or endpoint problems were detected.", len(matches), intentText))
 	}
+}
+
+func (s *gatewayScanner) addGatewaySelectedRuleFilterDetails(ctx context.Context, client *kube.Client, routeIndex map[string]unstructured.Unstructured, selectedRules []gatewayRuleMatch, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error, intent gatewayTrafficIntent) {
+	reportedRewrite := map[string]bool{}
+	reportedMirror := map[string]bool{}
+	for _, match := range selectedRules {
+		route, ok := routeIndex[match.RouteNamespace+"/"+match.RouteName]
+		if !ok {
+			continue
+		}
+		ruleRef := fmt.Sprintf("%s/%s rule %d", match.RouteNamespace, match.RouteName, match.RuleNumber)
+		if rewrite := gatewayURLRewriteText(match.Rule, intent); rewrite != "" && !reportedRewrite[ruleRef] {
+			reportedRewrite[ruleRef] = true
+			s.report.Add("Gateway Traffic Path", ruleRef+" rewrite", model.StatusInfo, fmt.Sprintf("HTTPRoute %s %s.", ruleRef, rewrite))
+		}
+		for mirrorIndex, mirror := range gatewayRequestMirrorBackendRefs(match.Rule) {
+			key := fmt.Sprintf("%s/%d", ruleRef, mirrorIndex)
+			if reportedMirror[key] {
+				continue
+			}
+			reportedMirror[key] = true
+			analysis := gatewayAnalyzeBackendRef(ctx, client, route, match.RuleNumber, mirrorIndex+1, mirror, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+			if analysis.Broken {
+				message := fmt.Sprintf("HTTPRoute %s mirrors this request to %s, but the mirror backend is broken: %s.", ruleRef, analysis.BackendText, analysis.Reason)
+				s.report.Add("Gateway Traffic Path", ruleRef+" mirror "+strconv.Itoa(mirrorIndex+1), model.StatusWarn, message)
+				s.report.Diagnose(message)
+				continue
+			}
+			s.report.Add("Gateway Traffic Path", ruleRef+" mirror "+strconv.Itoa(mirrorIndex+1), model.StatusInfo, fmt.Sprintf("HTTPRoute %s mirrors this request to %s.", ruleRef, analysis.BackendText))
+		}
+	}
+}
+
+func (s *gatewayScanner) addGatewayTrafficTLSDetails(ctx context.Context, client *kube.Client, listeners []gatewayListenerCandidate, refGrants []unstructured.Unstructured) {
+	for _, candidate := range listeners {
+		protocol := strings.ToUpper(strings.TrimSpace(stringField(candidate.Listener, "protocol")))
+		if protocol != "HTTPS" && protocol != "TLS" {
+			continue
+		}
+		gwName := objectRefText(candidate.Gateway)
+		listenerName := stringField(candidate.Listener, "name")
+		check := gwName + "/" + listenerName
+		status := gatewayStatusListeners(candidate.Gateway.Object)[listenerName]
+		if cond, ok := conditionByType(status, string(gatewayv1.ListenerConditionProgrammed)); ok && strings.EqualFold(cond.Status, "False") {
+			s.addProblem("Gateway Traffic TLS", check+" Programmed", model.StatusFail, fmt.Sprintf("Matched HTTPS listener %s is not Programmed: %s%s", check, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("HTTPS request matched Gateway listener %s, but that listener is not Programmed: %s%s", check, cond.Reason, conditionMessageSuffix(cond.Message)))
+		}
+		if cond, ok := conditionByType(status, string(gatewayv1.ListenerConditionResolvedRefs)); ok && strings.EqualFold(cond.Status, "False") {
+			s.addProblem("Gateway Traffic TLS", check+" ResolvedRefs", model.StatusFail, fmt.Sprintf("Matched HTTPS listener %s has unresolved TLS/reference config: %s%s", check, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("HTTPS request matched Gateway listener %s, but its references are not resolved: %s%s", check, cond.Reason, conditionMessageSuffix(cond.Message)))
+		}
+		s.addGatewayTrafficTLSSecretRefs(ctx, client, candidate.Gateway, candidate.Listener, refGrants)
+	}
+}
+
+func (s *gatewayScanner) addGatewayTrafficTLSSecretRefs(ctx context.Context, client *kube.Client, gateway unstructured.Unstructured, listener map[string]interface{}, refGrants []unstructured.Unstructured) {
+	certRefs := sliceField(listener, "tls", "certificateRefs")
+	if len(certRefs) == 0 {
+		return
+	}
+	gwName := objectRefText(gateway)
+	listenerName := stringField(listener, "name")
+	checkPrefix := gwName + "/" + listenerName
+	for _, raw := range certRefs {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name := stringField(ref, "name")
+		if name == "" {
+			continue
+		}
+		group := stringField(ref, "group")
+		kind := defaultString(stringField(ref, "kind"), "Secret")
+		namespace := defaultString(stringField(ref, "namespace"), gateway.GetNamespace())
+		check := fmt.Sprintf("%s cert %s/%s", checkPrefix, namespace, name)
+		if group != "" || kind != "Secret" {
+			s.report.Add("Gateway Traffic TLS", check, model.StatusWarn, fmt.Sprintf("Matched HTTPS listener %s certificateRef %s/%s is %s/%s; KNM only validates core Secret refs right now.", checkPrefix, namespace, name, group, kind))
+			continue
+		}
+		if namespace != gateway.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, "Gateway", gateway.GetNamespace(), "", "Secret", name, namespace) {
+			message := fmt.Sprintf("HTTPS request matched Gateway listener %s, but it references TLS Secret %s/%s across namespaces without a matching ReferenceGrant.", checkPrefix, namespace, name)
+			s.addProblem("Gateway Traffic TLS", check, model.StatusFail, message, message)
+			continue
+		}
+		if _, err := client.Core.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			message := fmt.Sprintf("HTTPS request matched Gateway listener %s, but TLS Secret %s/%s is missing or unreadable.", checkPrefix, namespace, name)
+			s.addProblem("Gateway Traffic TLS", check, model.StatusFail, message, message)
+			continue
+		}
+		s.report.Add("Gateway Traffic TLS", check, model.StatusPass, fmt.Sprintf("Matched HTTPS listener %s references readable TLS Secret %s/%s.", checkPrefix, namespace, name))
+	}
+}
+
+func defaultGatewayRuleMatches(primary, fallback []gatewayRuleMatch) []gatewayRuleMatch {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func (s *gatewayScanner) addGatewayTrafficRuleContext(matches []gatewayRuleMatch, selected []gatewayRuleMatch) {
+	if len(matches) == 0 {
+		return
+	}
+	var ruleRefs []string
+	seenRules := map[string]bool{}
+	for _, match := range matches {
+		key := fmt.Sprintf("%s/%s rule %d", match.RouteNamespace, match.RouteName, match.RuleNumber)
+		if !seenRules[key] {
+			seenRules[key] = true
+			ruleRefs = append(ruleRefs, key)
+		}
+		if filters := gatewayHTTPRouteRuleFilterSummary(match.Rule); filters != "" {
+			s.report.Add("Gateway Traffic Path", key+" filters", model.StatusInfo, fmt.Sprintf("HTTPRoute %s applies filter(s): %s.", key, filters))
+		}
+	}
+	sort.Strings(ruleRefs)
+	if len(ruleRefs) > 1 {
+		s.report.Add("Gateway Traffic Path", "multiple matching rules", model.StatusInfo, fmt.Sprintf("Request matches multiple HTTPRoute rules: %s.", strings.Join(ruleRefs, ", ")))
+	}
+	if len(selected) == 0 || len(ruleRefs) <= 1 {
+		return
+	}
+	var selectedRefs []string
+	for _, match := range selected {
+		selectedRefs = append(selectedRefs, fmt.Sprintf("%s/%s/%s -> %s/%s rule %d (%s)", match.GatewayNamespace, match.GatewayName, match.ListenerName, match.RouteNamespace, match.RouteName, match.RuleNumber, gatewaySelectedRuleReason(match, matches)))
+	}
+	sort.Strings(selectedRefs)
+	s.report.Add("Gateway Traffic Path", "selected rule", model.StatusInfo, fmt.Sprintf("Gateway API precedence selects: %s.", strings.Join(selectedRefs, "; ")))
+}
+
+func gatewaySelectedRuleReason(selected gatewayRuleMatch, matches []gatewayRuleMatch) string {
+	for _, candidate := range matches {
+		if !gatewaySameParent(selected, candidate) || gatewaySameRule(selected, candidate) {
+			continue
+		}
+		if reason := gatewayPrecedenceReason(selected, candidate); reason != "" {
+			return reason
+		}
+	}
+	return "first matching rule by Gateway API tie-breakers"
+}
+
+func gatewaySameParent(left, right gatewayRuleMatch) bool {
+	return left.GatewayNamespace == right.GatewayNamespace &&
+		left.GatewayName == right.GatewayName &&
+		left.ListenerName == right.ListenerName
+}
+
+func gatewaySameRule(left, right gatewayRuleMatch) bool {
+	return left.RouteNamespace == right.RouteNamespace &&
+		left.RouteName == right.RouteName &&
+		left.RuleNumber == right.RuleNumber
+}
+
+func gatewayPrecedenceReason(selected, other gatewayRuleMatch) string {
+	switch {
+	case selected.Score.HostNonWildcardChars > other.Score.HostNonWildcardChars:
+		return "more specific hostname"
+	case selected.Score.HostChars > other.Score.HostChars:
+		return "more specific hostname"
+	case selected.Score.PathRank > other.Score.PathRank:
+		return "exact path match"
+	case selected.Score.PathChars > other.Score.PathChars:
+		return "longer path prefix"
+	case selected.Score.Method > other.Score.Method:
+		return "method match"
+	case selected.Score.Headers > other.Score.Headers:
+		return "more header matches"
+	case selected.Score.QueryParams > other.Score.QueryParams:
+		return "more query parameter matches"
+	}
+	selectedRoute := selected.RouteNamespace + "/" + selected.RouteName
+	otherRoute := other.RouteNamespace + "/" + other.RouteName
+	if selectedRoute != otherRoute {
+		if !selected.RouteCreated.IsZero() && !other.RouteCreated.IsZero() && selected.RouteCreated.Before(&other.RouteCreated) {
+			return "older HTTPRoute creation timestamp"
+		}
+		if selectedRoute < otherRoute {
+			return "alphabetical HTTPRoute tie-breaker"
+		}
+		return ""
+	}
+	if selected.RuleNumber < other.RuleNumber {
+		return "first matching rule in the HTTPRoute"
+	}
+	return ""
+}
+
+func (s *gatewayScanner) addGatewayExpectedServiceCheck(matches []gatewayPathMatch) {
+	expected, err := parseGatewayServiceRef(s.opts.ExpectService)
+	if err != nil || expected.Name == "" {
+		return
+	}
+	var matched []string
+	seen := map[string]bool{}
+	found := false
+	var routeRules []string
+	seenRouteRules := map[string]bool{}
+	for _, match := range matches {
+		service := gatewayObjectRef{Namespace: match.BackendNamespace, Name: match.BackendName}
+		text := gatewayServiceRefText(service)
+		if !seen[text] {
+			seen[text] = true
+			matched = append(matched, text)
+		}
+		routeRule := fmt.Sprintf("%s/%s rule %d", match.RouteNamespace, match.RouteName, match.RuleNumber)
+		if !seenRouteRules[routeRule] {
+			seenRouteRules[routeRule] = true
+			routeRules = append(routeRules, routeRule)
+		}
+		if gatewayServiceRefEqual(service, expected) {
+			found = true
+		}
+	}
+	sort.Strings(matched)
+	sort.Strings(routeRules)
+	expectedText := gatewayServiceRefText(expected)
+	if found {
+		s.report.Add("Gateway Traffic Intent", "expected service", model.StatusPass, fmt.Sprintf("Traffic intent selected expected Service %s.", expectedText))
+		return
+	}
+	message := fmt.Sprintf("This Gateway request routes to Service %s, not expected Service %s.", strings.Join(matched, ", "), expectedText)
+	if len(routeRules) > 0 {
+		message += fmt.Sprintf(" Selected route: %s.", strings.Join(routeRules, ", "))
+	}
+	s.addProblem("Gateway Traffic Intent", "expected service", model.StatusFail, message, message)
 }
 
 func (s *gatewayScanner) addGatewayTrafficScope(intent gatewayTrafficIntent, listeners []gatewayListenerCandidate, attachedRoutes []unstructured.Unstructured) {
@@ -886,6 +1159,8 @@ func gatewayAnalyzeBackendRef(ctx context.Context, client *kube.Client, route un
 	group := stringField(backend, "group")
 	kind := defaultString(stringField(backend, "kind"), "Service")
 	if group != "" || kind != "Service" {
+		analysis.Broken = true
+		analysis.Reason = "backend kind " + gatewayBackendKindText(group, kind) + " is not evaluated by KNM"
 		return analysis
 	}
 	if namespace != route.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, "HTTPRoute", route.GetNamespace(), "", "Service", name, namespace) {
@@ -925,6 +1200,13 @@ func gatewayAnalyzeBackendRef(ctx context.Context, client *kube.Client, route un
 
 func gatewayBackendRefWeight(backend map[string]interface{}) int64 {
 	return int64FieldDefault(backend, "weight", 1)
+}
+
+func gatewayBackendKindText(group, kind string) string {
+	if strings.TrimSpace(group) == "" {
+		return kind
+	}
+	return group + "/" + kind
 }
 
 func gatewayMixedWeightedGroups(groups map[string][]gatewayBackendRefAnalysis) map[string]bool {
@@ -967,10 +1249,11 @@ func gatewayWeightedBackendMessage(analyses []gatewayBackendRefAnalysis) string 
 	sort.Slice(analyses, func(i, j int) bool {
 		return analyses[i].BackendNumber < analyses[j].BackendNumber
 	})
+	totalWeight := gatewayTotalBackendWeight(analyses)
 	var broken []string
 	for _, analysis := range analyses {
 		if analysis.Broken {
-			broken = append(broken, fmt.Sprintf("%s weight %d (%s)", analysis.BackendText, analysis.Weight, analysis.Reason))
+			broken = append(broken, fmt.Sprintf("%s %s (%s)", analysis.BackendText, gatewayBackendWeightText(analysis.Weight, totalWeight), analysis.Reason))
 		}
 	}
 	if len(broken) == 0 {
@@ -981,6 +1264,37 @@ func gatewayWeightedBackendMessage(analyses []gatewayBackendRefAnalysis) string 
 		label = "broken backends"
 	}
 	return fmt.Sprintf("HTTPRoute %s rule %d splits this request across weighted backendRefs; %s: %s.", analyses[0].RouteName, analyses[0].RuleNumber, label, strings.Join(broken, "; "))
+}
+
+func gatewayTotalBackendWeight(analyses []gatewayBackendRefAnalysis) int64 {
+	var total int64
+	for _, analysis := range analyses {
+		if analysis.Weight > 0 {
+			total += analysis.Weight
+		}
+	}
+	return total
+}
+
+func gatewayBackendWeightText(weight, total int64) string {
+	if total <= 0 || total == 100 {
+		return fmt.Sprintf("weight %d", weight)
+	}
+	return fmt.Sprintf("weight %d (%s)", weight, gatewayWeightPercentText(weight, total))
+}
+
+func gatewayWeightPercentText(weight, total int64) string {
+	if total <= 0 {
+		return ""
+	}
+	tenths := weight * 1000 / total
+	if weight*1000%total >= (total+1)/2 {
+		tenths++
+	}
+	if tenths%10 == 0 {
+		return fmt.Sprintf("%d%%", tenths/10)
+	}
+	return fmt.Sprintf("%.1f%%", float64(tenths)/10)
 }
 
 func (s *gatewayScanner) gatewayTrafficScopedGateways(gateways []unstructured.Unstructured) []unstructured.Unstructured {
@@ -1504,6 +1818,29 @@ type gatewayPathMatch struct {
 	MatchSummary     string
 }
 
+type gatewayRuleMatch struct {
+	GatewayNamespace string
+	GatewayName      string
+	ListenerName     string
+	RouteNamespace   string
+	RouteName        string
+	RuleNumber       int
+	Rule             map[string]interface{}
+	RouteCreated     metav1.Time
+	Score            gatewayRulePrecedenceScore
+}
+
+type gatewayRulePrecedenceScore struct {
+	HostNonWildcardChars int
+	HostChars            int
+	PathRank             int
+	PathChars            int
+	Method               int
+	Headers              int
+	QueryParams          int
+	RegexPath            bool
+}
+
 func parseGatewayObjectRef(raw string, defaultNamespace string) gatewayObjectRef {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1514,6 +1851,42 @@ func parseGatewayObjectRef(raw string, defaultNamespace string) gatewayObjectRef
 		return gatewayObjectRef{Namespace: parts[0], Name: parts[1]}
 	}
 	return gatewayObjectRef{Namespace: defaultNamespace, Name: raw}
+}
+
+func parseGatewayServiceRef(raw string) (gatewayObjectRef, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return gatewayObjectRef{}, nil
+	}
+	parts := strings.Split(raw, "/")
+	switch len(parts) {
+	case 1:
+		if parts[0] == "" {
+			return gatewayObjectRef{}, fmt.Errorf("Invalid --expect-service value %q. Use name or namespace/name.", raw)
+		}
+		return gatewayObjectRef{Name: parts[0]}, nil
+	case 2:
+		if parts[0] == "" || parts[1] == "" {
+			return gatewayObjectRef{}, fmt.Errorf("Invalid --expect-service value %q. Use name or namespace/name.", raw)
+		}
+		return gatewayObjectRef{Namespace: parts[0], Name: parts[1]}, nil
+	default:
+		return gatewayObjectRef{}, fmt.Errorf("Invalid --expect-service value %q. Use name or namespace/name.", raw)
+	}
+}
+
+func gatewayServiceRefText(ref gatewayObjectRef) string {
+	if ref.Namespace == "" {
+		return ref.Name
+	}
+	return ref.Namespace + "/" + ref.Name
+}
+
+func gatewayServiceRefEqual(got, want gatewayObjectRef) bool {
+	if want.Name == "" || got.Name != want.Name {
+		return false
+	}
+	return want.Namespace == "" || got.Namespace == want.Namespace
 }
 
 func gatewayObjectRefMatches(object unstructured.Unstructured, filter gatewayObjectRef) bool {
@@ -1545,6 +1918,234 @@ func routeMatchesGatewayFilter(route unstructured.Unstructured, filter gatewayOb
 		}
 	}
 	return false
+}
+
+func gatewayFindRuleMatches(gateways []unstructured.Unstructured, routes []unstructured.Unstructured, intent gatewayTrafficIntent) []gatewayRuleMatch {
+	if intent.Path == "" {
+		intent.Path = "/"
+	}
+	var matches []gatewayRuleMatch
+	for _, gateway := range gateways {
+		listeners := sliceField(gateway.Object, "spec", "listeners")
+		for _, rawListener := range listeners {
+			listener, ok := rawListener.(map[string]interface{})
+			if !ok || !gatewayListenerMatchesIntent(listener, intent) {
+				continue
+			}
+			listenerName := stringField(listener, "name")
+			for _, route := range routes {
+				if !gatewayRouteAttachedToGateway(route, gateway, listenerName) {
+					continue
+				}
+				if !gatewayHTTPRouteHostnameMatches(route, intent.Host) {
+					continue
+				}
+				rules := sliceField(route.Object, "spec", "rules")
+				for ruleIndex, rawRule := range rules {
+					rule, ok := rawRule.(map[string]interface{})
+					if !ok || !gatewayHTTPRouteRuleMatches(rule, intent) {
+						continue
+					}
+					matches = append(matches, gatewayRuleMatch{
+						GatewayNamespace: gateway.GetNamespace(),
+						GatewayName:      gateway.GetName(),
+						ListenerName:     listenerName,
+						RouteNamespace:   route.GetNamespace(),
+						RouteName:        route.GetName(),
+						RuleNumber:       ruleIndex + 1,
+						Rule:             rule,
+						RouteCreated:     route.GetCreationTimestamp(),
+						Score:            gatewayRulePrecedenceScoreForRoute(route, rule, intent),
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		left := fmt.Sprintf("%s/%s/%s/%s/%s/%03d", matches[i].GatewayNamespace, matches[i].GatewayName, matches[i].ListenerName, matches[i].RouteNamespace, matches[i].RouteName, matches[i].RuleNumber)
+		right := fmt.Sprintf("%s/%s/%s/%s/%s/%03d", matches[j].GatewayNamespace, matches[j].GatewayName, matches[j].ListenerName, matches[j].RouteNamespace, matches[j].RouteName, matches[j].RuleNumber)
+		return left < right
+	})
+	return matches
+}
+
+func gatewaySelectPrecedenceRules(matches []gatewayRuleMatch) []gatewayRuleMatch {
+	if len(matches) == 0 {
+		return nil
+	}
+	groups := map[string][]gatewayRuleMatch{}
+	for _, match := range matches {
+		key := match.GatewayNamespace + "/" + match.GatewayName + "/" + match.ListenerName
+		groups[key] = append(groups[key], match)
+	}
+	var selected []gatewayRuleMatch
+	for _, group := range groups {
+		sort.Slice(group, func(i, j int) bool {
+			return gatewayRulePrecedenceLess(group[i], group[j])
+		})
+		selected = append(selected, group[0])
+	}
+	sort.Slice(selected, func(i, j int) bool {
+		left := fmt.Sprintf("%s/%s/%s/%s/%s/%03d", selected[i].GatewayNamespace, selected[i].GatewayName, selected[i].ListenerName, selected[i].RouteNamespace, selected[i].RouteName, selected[i].RuleNumber)
+		right := fmt.Sprintf("%s/%s/%s/%s/%s/%03d", selected[j].GatewayNamespace, selected[j].GatewayName, selected[j].ListenerName, selected[j].RouteNamespace, selected[j].RouteName, selected[j].RuleNumber)
+		return left < right
+	})
+	return selected
+}
+
+func gatewayFilterMatchesToSelectedRules(matches []gatewayPathMatch, selected []gatewayRuleMatch) []gatewayPathMatch {
+	if len(matches) == 0 || len(selected) == 0 {
+		return matches
+	}
+	keep := map[string]bool{}
+	for _, match := range selected {
+		keep[gatewayRuleKey(match.GatewayNamespace, match.GatewayName, match.ListenerName, match.RouteNamespace, match.RouteName, match.RuleNumber)] = true
+	}
+	var out []gatewayPathMatch
+	for _, match := range matches {
+		if keep[gatewayRuleKey(match.GatewayNamespace, match.GatewayName, match.ListenerName, match.RouteNamespace, match.RouteName, match.RuleNumber)] {
+			out = append(out, match)
+		}
+	}
+	return out
+}
+
+func gatewayRuleKey(gatewayNamespace, gatewayName, listenerName, routeNamespace, routeName string, ruleNumber int) string {
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%d", gatewayNamespace, gatewayName, listenerName, routeNamespace, routeName, ruleNumber)
+}
+
+func gatewayRulePrecedenceLess(left, right gatewayRuleMatch) bool {
+	if cmp := gatewayCompareRuleScore(left.Score, right.Score); cmp != 0 {
+		return cmp > 0
+	}
+	leftRoute := left.RouteNamespace + "/" + left.RouteName
+	rightRoute := right.RouteNamespace + "/" + right.RouteName
+	if leftRoute != rightRoute {
+		if !left.RouteCreated.IsZero() || !right.RouteCreated.IsZero() {
+			if left.RouteCreated.IsZero() {
+				return false
+			}
+			if right.RouteCreated.IsZero() {
+				return true
+			}
+			if !left.RouteCreated.Equal(&right.RouteCreated) {
+				return left.RouteCreated.Before(&right.RouteCreated)
+			}
+		}
+		return leftRoute < rightRoute
+	}
+	return left.RuleNumber < right.RuleNumber
+}
+
+func gatewayCompareRuleScore(left, right gatewayRulePrecedenceScore) int {
+	leftValues := []int{left.HostNonWildcardChars, left.HostChars, left.PathRank, left.PathChars, left.Method, left.Headers, left.QueryParams}
+	rightValues := []int{right.HostNonWildcardChars, right.HostChars, right.PathRank, right.PathChars, right.Method, right.Headers, right.QueryParams}
+	for i := range leftValues {
+		if leftValues[i] > rightValues[i] {
+			return 1
+		}
+		if leftValues[i] < rightValues[i] {
+			return -1
+		}
+	}
+	return 0
+}
+
+func gatewayRulePrecedenceScoreForRoute(route unstructured.Unstructured, rule map[string]interface{}, intent gatewayTrafficIntent) gatewayRulePrecedenceScore {
+	score := gatewayRouteHostnamePrecedenceScore(route, intent.Host)
+	matchScore, ok := gatewayBestHTTPMatchPrecedenceScore(rule, intent)
+	if ok {
+		score.PathRank = matchScore.PathRank
+		score.PathChars = matchScore.PathChars
+		score.Method = matchScore.Method
+		score.Headers = matchScore.Headers
+		score.QueryParams = matchScore.QueryParams
+		score.RegexPath = matchScore.RegexPath
+	}
+	return score
+}
+
+func gatewayRouteHostnamePrecedenceScore(route unstructured.Unstructured, host string) gatewayRulePrecedenceScore {
+	var best gatewayRulePrecedenceScore
+	for _, raw := range sliceField(route.Object, "spec", "hostnames") {
+		pattern, ok := raw.(string)
+		if !ok || !gatewayHostnameMatches(pattern, host) {
+			continue
+		}
+		candidate := gatewayHostnamePrecedenceScore(pattern)
+		if gatewayCompareRuleScore(candidate, best) > 0 {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func gatewayHostnamePrecedenceScore(pattern string) gatewayRulePrecedenceScore {
+	pattern = gatewayNormalizeHostname(pattern)
+	if pattern == "" {
+		return gatewayRulePrecedenceScore{}
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := strings.TrimPrefix(pattern, "*.")
+		return gatewayRulePrecedenceScore{
+			HostNonWildcardChars: len(suffix),
+			HostChars:            len(pattern),
+		}
+	}
+	return gatewayRulePrecedenceScore{
+		HostNonWildcardChars: len(pattern),
+		HostChars:            len(pattern),
+	}
+}
+
+func gatewayBestHTTPMatchPrecedenceScore(rule map[string]interface{}, intent gatewayTrafficIntent) (gatewayRulePrecedenceScore, bool) {
+	matches := sliceField(rule, "matches")
+	if len(matches) == 0 {
+		return gatewayRulePrecedenceScore{PathRank: 1, PathChars: 1}, true
+	}
+	var best gatewayRulePrecedenceScore
+	found := false
+	for _, raw := range matches {
+		match, ok := raw.(map[string]interface{})
+		if !ok || !gatewayHTTPRouteSingleMatch(match, intent) {
+			continue
+		}
+		score := gatewayHTTPMatchPrecedenceScore(match)
+		if !found || gatewayCompareRuleScore(score, best) > 0 {
+			best = score
+			found = true
+		}
+	}
+	return best, found
+}
+
+func gatewayHTTPMatchPrecedenceScore(match map[string]interface{}) gatewayRulePrecedenceScore {
+	score := gatewayRulePrecedenceScore{}
+	pathSpec, ok := nestedMap(match, "path")
+	if !ok {
+		score.PathRank = 1
+		score.PathChars = 1
+	} else {
+		value := defaultString(stringField(pathSpec, "value"), "/")
+		switch stringField(pathSpec, "type") {
+		case "Exact":
+			score.PathRank = 2
+			score.PathChars = len(value)
+		case "", "PathPrefix":
+			score.PathRank = 1
+			score.PathChars = len(value)
+		case "RegularExpression":
+			score.PathRank = 0
+			score.PathChars = len(value)
+			score.RegexPath = true
+		}
+	}
+	if strings.TrimSpace(stringField(match, "method")) != "" {
+		score.Method = 1
+	}
+	score.Headers = len(sliceField(match, "headers"))
+	score.QueryParams = len(sliceField(match, "queryParams"))
+	return score
 }
 
 func gatewayFindCandidatePaths(gateways []unstructured.Unstructured, routes []unstructured.Unstructured, intent gatewayTrafficIntent) []gatewayPathMatch {
@@ -1866,6 +2467,94 @@ func gatewayHTTPRouteRuleMatchSummary(rule map[string]interface{}) string {
 		summaries = append(summaries, strings.Join(parts, ", "))
 	}
 	return strings.Join(summaries, " OR ")
+}
+
+func gatewayHTTPRouteRuleFilterSummary(rule map[string]interface{}) string {
+	filters := sliceField(rule, "filters")
+	if len(filters) == 0 {
+		return ""
+	}
+	var names []string
+	for _, raw := range filters {
+		filter, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		filterType := stringField(filter, "type")
+		if filterType == "" {
+			filterType = "unknown"
+		}
+		names = append(names, filterType)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.Join(names, ", ")
+}
+
+func gatewayURLRewriteText(rule map[string]interface{}, intent gatewayTrafficIntent) string {
+	for _, raw := range sliceField(rule, "filters") {
+		filter, ok := raw.(map[string]interface{})
+		if !ok || stringField(filter, "type") != "URLRewrite" {
+			continue
+		}
+		rewrite, ok := nestedMap(filter, "urlRewrite")
+		if !ok {
+			return "rewrites the request URL"
+		}
+		var parts []string
+		if hostname := stringField(rewrite, "hostname"); hostname != "" {
+			parts = append(parts, fmt.Sprintf("host to %q", hostname))
+		}
+		if path, ok := nestedMap(rewrite, "path"); ok {
+			switch stringField(path, "type") {
+			case "ReplaceFullPath":
+				if value := stringField(path, "replaceFullPath"); value != "" {
+					parts = append(parts, fmt.Sprintf("path from %q to %q", defaultString(intent.Path, "/"), value))
+				}
+			case "ReplacePrefixMatch":
+				if value := stringField(path, "replacePrefixMatch"); value != "" {
+					parts = append(parts, fmt.Sprintf("matching path prefix to %q", value))
+				}
+			default:
+				parts = append(parts, "path")
+			}
+		}
+		if len(parts) == 0 {
+			return "rewrites the request URL"
+		}
+		return "rewrites " + strings.Join(parts, " and ")
+	}
+	return ""
+}
+
+func gatewayRequestMirrorBackendRefs(rule map[string]interface{}) []map[string]interface{} {
+	var out []map[string]interface{}
+	for _, raw := range sliceField(rule, "filters") {
+		filter, ok := raw.(map[string]interface{})
+		if !ok || stringField(filter, "type") != "RequestMirror" {
+			continue
+		}
+		mirror, ok := nestedMap(filter, "requestMirror")
+		if !ok {
+			continue
+		}
+		backend, ok := nestedMap(mirror, "backendRef")
+		if !ok {
+			continue
+		}
+		out = append(out, backend)
+	}
+	return out
+}
+
+func gatewayFirstRedirectRule(matches []gatewayRuleMatch) *gatewayRuleMatch {
+	for i := range matches {
+		if httpRouteRuleHasRedirect(matches[i].Rule) {
+			return &matches[i]
+		}
+	}
+	return nil
 }
 
 func gatewayPathMatchSortKey(match gatewayPathMatch) string {

@@ -39,7 +39,7 @@ Use it when something should connect, but does not:
 - Istio mesh visibility guardrails for `VirtualService.spec.gateways`, `VirtualService.exportTo`, and `DestinationRule.exportTo` so `check service` focuses on config visible to the tested source-to-Service path
 - Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
 - Gateway API v1 static scans for GatewayClass, Gateway, listener status, HTTPRoute attachment, ReferenceGrant, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
-- Gateway API traffic-intent checks for host/path/method/header matching, listener and HTTPRoute hostname misses, backendRef failures, inactive `weight: 0` backendRefs, and mixed weighted backend paths
+- Gateway API traffic-intent checks for host/path/method/header matching, listener and HTTPRoute hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
 - NodePort and LoadBalancer exposure checks
 - external egress URL checks
 - policy blocker and preflight checks before a pod exists
@@ -347,6 +347,10 @@ knm check gateway --host payments.example.com --path /api
 knm check gateway --url https://payments.example.com/api --method POST --header x-canary=true
 ```
 
+```powershell
+knm check gateway --url https://payments.example.com/api --expect-service apps/payments-api
+```
+
 Traffic-intent mode traces the request through matching Gateway listeners, attached HTTPRoutes, route rules, backendRefs, Services, and EndpointSlices. It can explain request-specific misses that a broad scan cannot see, such as:
 
 - no Gateway listener matching the request host/scheme/port
@@ -354,10 +358,16 @@ Traffic-intent mode traces the request through matching Gateway listeners, attac
 - attached HTTPRoutes with no hostname matching the request host
 - path, method, header, or query matches that do not select a rule
 - hostname typo near-misses for listener and route hostnames
+- multiple matching HTTPRoute rules and the Gateway API precedence-selected rule
 - a matched backendRef pointing at a missing Service, wrong Service port, missing ReferenceGrant, or no ready endpoints
+- a matched backendRef using a non-Service backend kind that KNM does not evaluate
 - a matched rule that splits the request across healthy and broken weighted backendRefs
+- a matched rule that redirects the request instead of routing to backendRefs
+- a matched rule that rewrites the request URL before forwarding
+- a matched rule that mirrors the request to a broken shadow backend
+- traffic that matches a different backend Service than the one you expected
 
-`--url` owns scheme, host, port, path, and query. `--method` and `--header` can be combined with `--url`. If you do not use `--url`, provide `--host`; `--path` defaults to `/` and `--method` defaults to `GET`.
+`--url` owns scheme, host, port, path, and query. `--method`, `--header`, and `--expect-service` can be combined with `--url`. If you do not use `--url`, provide `--host`; `--path` defaults to `/` and `--method` defaults to `GET`.
 
 ## Show Policy Blockers
 

@@ -367,6 +367,7 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.StringVar(&opts.Path, "path", "", "request path for traffic intent; defaults to / when --host is used")
 	fs.StringVar(&opts.Method, "method", "", "request method for traffic intent")
 	fs.Var(&headers, "header", "request header as Name=Value for traffic intent; repeatable")
+	fs.StringVar(&opts.ExpectService, "expect-service", "", "expected backend Service for traffic intent as name or namespace/name")
 	fs.IntVar(&opts.Limit, "limit", 50, "maximum problem details to print in scan mode")
 	fs.BoolVar(&opts.Wide, "wide", false, "include healthy scan summaries and extra context")
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
@@ -770,6 +771,7 @@ func gatewayUsage(w io.Writer) {
 			"knm check gateway --route apps/api-route --wide",
 			"knm check gateway --host payments.example.com --path /api",
 			"knm check gateway --url https://payments.example.com/api --method POST",
+			"knm check gateway --url https://payments.example.com/api --expect-service apps/payments-api",
 		},
 		[]helpFlag{
 			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
@@ -779,6 +781,7 @@ func gatewayUsage(w io.Writer) {
 			{"--path", "path", "traffic intent path; defaults to / with --host"},
 			{"--method", "method", "traffic intent HTTP method"},
 			{"--header", "Name=Value", "traffic intent header; repeatable"},
+			{"--expect-service", "name|namespace/name", "traffic intent should select this backend Service"},
 			{"-n, --namespace", "name", "scope filter: scan routes/services in namespace; all namespaces when omitted"},
 			{"--gateway", "name|namespace/name", "scope filter: only consider this Gateway"},
 			{"--route", "name|namespace/name", "scope filter: only consider this HTTPRoute"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/CoGoRepo/KubeNetMods/internal/kube"
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
@@ -131,6 +132,61 @@ func TestGatewayScanDiagnosesMissingTLSSecret(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "missing or unreadable TLS Secret infra/missing-cert")
 	assertGatewayDiagnosisNotContains(t, report, "is not Programmed")
 	assertGatewayDiagnosisNotContains(t, report, "is not ResolvedRefs")
+}
+
+func TestGatewayTrafficIntentDiagnosesMatchedHTTPSListenerMissingTLSSecret(t *testing.T) {
+	listener := testGatewayListener("https", []map[string]interface{}{
+		{"name": "partner-cert"},
+	})
+	listener["hostname"] = "partner.knm.local"
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "partner", "istio", true, "True", "True", listener),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "https",
+		Host:   "partner.knm.local",
+		Port:   443,
+		Path:   "/",
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusFail, "HTTPS request matched Gateway listener edge/partner/https, but TLS Secret edge/partner-cert is missing or unreadable.")
+	assertGatewayDiagnosisContains(t, report, "HTTPS request matched Gateway listener edge/partner/https, but TLS Secret edge/partner-cert is missing or unreadable.")
+	assertGatewayDiagnosisNotContains(t, report, "listener is not Programmed")
+	assertGatewayDiagnosisNotContains(t, report, "references are not resolved")
+}
+
+func TestGatewayTrafficIntentReportsReadableHTTPSListenerSecret(t *testing.T) {
+	listener := testGatewayListener("https", []map[string]interface{}{
+		{"name": "partner-cert"},
+	})
+	listener["hostname"] = "partner.knm.local"
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "partner", "istio", true, "True", "True", listener),
+		},
+		[]kruntime.Object{
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "partner-cert"}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "https",
+		Host:   "partner.knm.local",
+		Port:   443,
+		Path:   "/",
+	})
+
+	assertResultContains(t, report, model.StatusPass, "Matched HTTPS listener edge/partner/https references readable TLS Secret edge/partner-cert.")
+	assertGatewayDiagnosisNotContains(t, report, "TLS Secret edge/partner-cert is missing")
 }
 
 func TestGatewayScanKeepsRouteStatusDiagnosisWhenNoConcreteBackendCauseExists(t *testing.T) {
@@ -561,6 +617,12 @@ func TestGatewayTrafficIntentRequiresHostOrURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected path-only intent to be rejected")
 	}
+	_, _, err = gatewayTrafficIntentFromOptions(GatewayOptions{
+		ExpectService: "app/payments-api",
+	})
+	if err == nil {
+		t.Fatal("expected expected-service-only intent to be rejected")
+	}
 }
 
 func TestGatewayTrafficIntentScanMatchesBackendPath(t *testing.T) {
@@ -598,6 +660,124 @@ func TestGatewayTrafficIntentScanMatchesBackendPath(t *testing.T) {
 	}
 }
 
+func TestGatewayTrafficIntentExpectedServicePasses(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/payments-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/",
+	})
+
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/payments-api")
+	assertGatewayDiagnosisNotContains(t, report, "expected Service")
+}
+
+func TestGatewayTrafficIntentExpectedServiceMismatch(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/admin"}}},
+					"backendRefs": []interface{}{testBackendRef("admin-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path":   map[string]interface{}{"type": "PathPrefix", "value": "/api"},
+						"method": "POST",
+					}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"},
+						"headers": []interface{}{map[string]interface{}{
+							"name":  "x-canary",
+							"value": "true",
+						}},
+					}},
+					"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{
+						map[string]interface{}{"name": "orders-api", "port": int64(80), "weight": int64(0)},
+					},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/payments-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+		Method: "GET",
+		Headers: map[string]string{
+			"x-canary": "true",
+		},
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "This Gateway request routes to Service app/catalog-api, not expected Service app/payments-api. Selected route: app/payments rule 3.")
+}
+
+func TestGatewayTrafficIntentExpectedServiceMatchesWeightedBackend(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"backendRefs": []interface{}{
+						map[string]interface{}{"name": "catalog-api", "port": int64(80), "weight": int64(50)},
+						map[string]interface{}{"name": "payments-api", "port": int64(80), "weight": int64(50)},
+					},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.11"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/payments-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/",
+	})
+
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/payments-api")
+	assertGatewayDiagnosisNotContains(t, report, "but expected Service")
+}
+
 func TestGatewayTrafficIntentScanReportsMatchedBackendProblem(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
@@ -605,8 +785,31 @@ func TestGatewayTrafficIntentScanReportsMatchedBackendProblem(t *testing.T) {
 			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
 			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
 				{
-					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/admin"}}},
+					"backendRefs": []interface{}{testBackendRef("admin-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path":   map[string]interface{}{"type": "PathPrefix", "value": "/api"},
+						"method": "POST",
+					}},
+					"backendRefs": []interface{}{testBackendRef("orders-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"},
+						"headers": []interface{}{map[string]interface{}{
+							"name":  "x-tenant",
+							"value": "gold",
+						}},
+					}},
 					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{
+						map[string]interface{}{"name": "catalog-api", "port": int64(80), "weight": int64(0)},
+					},
 				},
 			}),
 		},
@@ -619,9 +822,15 @@ func TestGatewayTrafficIntentScanReportsMatchedBackendProblem(t *testing.T) {
 		Host:   "payments.knm.local",
 		Port:   80,
 		Path:   "/api/items",
+		Method: "GET",
+		Headers: map[string]string{
+			"x-tenant": "gold",
+		},
 	})
 
-	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 1 routes to Service app/payments-api, but that Service is missing or unreadable")
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 3 routes to Service app/payments-api, but that Service is missing or unreadable")
+	assertGatewayDiagnosisNotContains(t, report, "rule 1 routes to Service app/payments-api")
 }
 
 func TestGatewayTrafficIntentScanReportsMixedWeightedBackends(t *testing.T) {
@@ -631,16 +840,149 @@ func TestGatewayTrafficIntentScanReportsMixedWeightedBackends(t *testing.T) {
 			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
 			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
 				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/admin"}}},
+					"backendRefs": []interface{}{testBackendRef("admin-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path":   map[string]interface{}{"type": "PathPrefix", "value": "/checkout"},
+						"method": "POST",
+					}},
+					"backendRefs": []interface{}{testBackendRef("orders-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path": map[string]interface{}{"type": "PathPrefix", "value": "/checkout"},
+						"headers": []interface{}{map[string]interface{}{
+							"name":  "x-split",
+							"value": "dense",
+						}},
+					}},
 					"backendRefs": []interface{}{
-						map[string]interface{}{"name": "catalog-api", "port": int64(80), "weight": int64(75)},
-						map[string]interface{}{"name": "payments-api", "port": int64(80), "weight": int64(25)},
+						map[string]interface{}{"name": "catalog-api", "port": int64(80), "weight": int64(2)},
+						map[string]interface{}{"name": "payments-api", "port": int64(80), "weight": int64(1)},
+						map[string]interface{}{"name": "orders-api", "port": int64(9999), "weight": int64(1)},
+						map[string]interface{}{"name": "archive-api", "port": int64(80), "weight": int64(0)},
 					},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path":   map[string]interface{}{"type": "PathPrefix", "value": "/checkout"},
+						"method": "POST",
+					}},
+					"backendRefs": []interface{}{testBackendRef("fallback-api", "", int64(80))},
 				},
 			}),
 		},
 		[]kruntime.Object{
 			testGatewayService("app", "catalog-api", 80),
 			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+			testGatewayService("app", "orders-api", 80),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/checkout/pay",
+		Method: "GET",
+		Headers: map[string]string{
+			"x-split": "dense",
+		},
+	})
+
+	assertResultContains(t, report, model.StatusWarn, "splits this request across weighted backendRefs")
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 3 splits this request across weighted backendRefs; broken backends: app/payments-api:80 weight 1 (25%) (missing Service); app/orders-api:9999 weight 1 (25%) (Service exposes 80->80/ name=http).")
+	assertGatewayDiagnosisNotContains(t, report, "but that Service is missing or unreadable")
+	assertGatewayDiagnosisNotContains(t, report, "archive-api")
+}
+
+func TestGatewayTrafficIntentReportsRedirectRule(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/admin"}}},
+					"backendRefs": []interface{}{testBackendRef("admin-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path":   map[string]interface{}{"type": "PathPrefix", "value": "/old"},
+						"method": "POST",
+					}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{
+						"path": map[string]interface{}{"type": "PathPrefix", "value": "/old"},
+						"headers": []interface{}{map[string]interface{}{
+							"name":  "x-legacy",
+							"value": "true",
+						}},
+					}},
+					"filters": []interface{}{map[string]interface{}{
+						"type":            "RequestRedirect",
+						"requestRedirect": map[string]interface{}{"path": map[string]interface{}{"type": "ReplaceFullPath", "replaceFullPath": "/new"}},
+					}},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/old"}}},
+					"backendRefs": []interface{}{
+						map[string]interface{}{"name": "catalog-api", "port": int64(80), "weight": int64(0)},
+					},
+				},
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/archive"}}},
+					"backendRefs": []interface{}{testBackendRef("archive-api", "", int64(80))},
+				},
+			}),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/old",
+		Method: "GET",
+		Headers: map[string]string{
+			"x-legacy": "true",
+		},
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusInfo, "app/payments rule 3 applies filter(s): RequestRedirect")
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 3 redirects this request instead of routing to backendRefs.")
+	assertGatewayDiagnosisNotContains(t, report, "rule 1 redirects")
+}
+
+func TestGatewayTrafficIntentReportsMultipleMatchingRulesAndFilters(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+					"filters":     []interface{}{map[string]interface{}{"type": "URLRewrite"}},
+				},
+			}),
+			testGatewayHTTPRouteForHostname("app", "catalog", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))}},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.11"),
 		},
 	)
 	report := model.NewReport("check gateway", model.Target{})
@@ -652,9 +994,288 @@ func TestGatewayTrafficIntentScanReportsMixedWeightedBackends(t *testing.T) {
 		Path:   "/",
 	})
 
-	assertResultContains(t, report, model.StatusWarn, "splits this request across weighted backendRefs")
-	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 1 splits this request across weighted backendRefs; broken backend: app/payments-api:80 weight 25 (missing Service).")
-	assertGatewayDiagnosisNotContains(t, report, "but that Service is missing or unreadable")
+	assertResultContains(t, report, model.StatusInfo, "Request matches multiple HTTPRoute rules: app/catalog rule 1, app/payments rule 1.")
+	assertResultContains(t, report, model.StatusInfo, "HTTPRoute app/payments rule 1 applies filter(s): URLRewrite.")
+}
+
+func TestGatewayTrafficIntentReportsSelectedURLRewriteRule(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{testBackendRef("legacy-api", "", int64(80))},
+				},
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}, "method": "POST"}},
+					"backendRefs": []interface{}{testBackendRef("archive-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}}},
+					"filters": []interface{}{map[string]interface{}{
+						"type": "URLRewrite",
+						"urlRewrite": map[string]interface{}{
+							"path": map[string]interface{}{"type": "ReplaceFullPath", "replaceFullPath": "/v2/items"},
+						},
+					}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/payments-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+		Method: "GET",
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusInfo, `HTTPRoute app/payments rule 3 rewrites path from "/api/items" to "/v2/items".`)
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/payments-api")
+	assertGatewayDiagnosisNotContains(t, report, "legacy-api")
+}
+
+func TestGatewayTrafficIntentReportsBrokenRequestMirrorSeparately(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{testBackendRef("legacy-api", "", int64(80))},
+				},
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}, "headers": []interface{}{map[string]interface{}{"name": "x-test", "value": "other"}}}},
+					"backendRefs": []interface{}{testBackendRef("archive-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}}},
+					"filters": []interface{}{map[string]interface{}{
+						"type": "RequestMirror",
+						"requestMirror": map[string]interface{}{
+							"backendRef": map[string]interface{}{"name": "shadow-api", "port": int64(80)},
+						},
+					}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/payments-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+		Method: "GET",
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "mirrors this request to app/shadow-api:80, but the mirror backend is broken: missing Service")
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 3 mirrors this request to app/shadow-api:80, but the mirror backend is broken: missing Service.")
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/payments-api")
+	assertGatewayDiagnosisNotContains(t, report, "legacy-api")
+}
+
+func TestGatewayTrafficIntentReportsUnsupportedBackendKind(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{testBackendRef("legacy-api", "", int64(80))},
+				},
+				{
+					"matches": []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}}},
+					"backendRefs": []interface{}{map[string]interface{}{
+						"group": "storage.example.io",
+						"kind":  "Bucket",
+						"name":  "payments-shadow",
+						"port":  int64(80),
+					}},
+				},
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/"}}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "HTTPRoute app/payments rule 2 routes to backend kind storage.example.io/Bucket app/payments-shadow; KNM does not evaluate that backend type.")
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments rule 2 routes to backend kind storage.example.io/Bucket app/payments-shadow; KNM does not evaluate that backend type.")
+	assertResultContains(t, report, model.StatusInfo, "app/payments rule 2 (exact path match)")
+	assertGatewayDiagnosisNotContains(t, report, "legacy-api")
+	assertResultNotContains(t, report, model.StatusPass, "no obvious backend reference or endpoint problems")
+}
+
+func TestGatewayTrafficIntentPrecedenceExactPathShadowsPrefixProblem(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/api"}}},
+					"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+				},
+				{
+					"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}}},
+					"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/catalog-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+	})
+
+	assertResultContains(t, report, model.StatusInfo, "app/payments rule 2 (exact path match)")
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/catalog-api")
+	assertGatewayDiagnosisNotContains(t, report, "payments-api")
+}
+
+func TestGatewayTrafficIntentPrecedenceExactHostnameShadowsWildcardProblem(t *testing.T) {
+	wildcard := testGatewayHTTPRouteForHostname("app", "wildcard", "edge", "public", "*.knm.local", []map[string]interface{}{
+		{
+			"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "Exact", "value": "/api/items"}}},
+			"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))},
+		},
+	})
+	exact := testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+		{
+			"matches":     []interface{}{map[string]interface{}{"path": map[string]interface{}{"type": "PathPrefix", "value": "/"}}},
+			"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))},
+		},
+	})
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			wildcard,
+			exact,
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/catalog-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/api/items",
+	})
+
+	assertResultContains(t, report, model.StatusInfo, "app/payments rule 1 (more specific hostname)")
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/catalog-api")
+	assertGatewayDiagnosisNotContains(t, report, "payments-api")
+}
+
+func TestGatewayTrafficIntentPrecedenceOldestRouteWinsTie(t *testing.T) {
+	newer := testGatewayHTTPRouteForHostname("app", "a-new", "edge", "public", "payments.knm.local", []map[string]interface{}{
+		{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+	})
+	newer.SetCreationTimestamp(metav1.Time{Time: time.Date(2026, 6, 8, 2, 0, 0, 0, time.UTC)})
+	older := testGatewayHTTPRouteForHostname("app", "z-old", "edge", "public", "payments.knm.local", []map[string]interface{}{
+		{"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))}},
+	})
+	older.SetCreationTimestamp(metav1.Time{Time: time.Date(2026, 6, 8, 1, 0, 0, 0, time.UTC)})
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			newer,
+			older,
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/catalog-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/",
+	})
+
+	assertResultContains(t, report, model.StatusInfo, "app/z-old rule 1 (older HTTPRoute creation timestamp)")
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/catalog-api")
+	assertGatewayDiagnosisNotContains(t, report, "payments-api")
+}
+
+func TestGatewayTrafficIntentPrecedenceFirstRuleWinsSameRouteTie(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+				{"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))}},
+				{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{ExpectService: "app/catalog-api"}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/",
+	})
+
+	assertResultContains(t, report, model.StatusInfo, "app/payments rule 1 (first matching rule in the HTTPRoute)")
+	assertResultContains(t, report, model.StatusPass, "selected expected Service app/catalog-api")
+	assertGatewayDiagnosisNotContains(t, report, "payments-api")
 }
 
 func TestGatewayTrafficIntentIgnoresZeroWeightBrokenBackend(t *testing.T) {
@@ -689,6 +1310,27 @@ func TestGatewayTrafficIntentIgnoresZeroWeightBrokenBackend(t *testing.T) {
 	assertGatewayDiagnosisNotContains(t, report, "payments-api")
 	if report.CountByStatus(model.StatusFail) != 0 {
 		t.Fatalf("expected no failures for inactive backendRef, got %#v", report.Results)
+	}
+}
+
+func TestGatewayBackendWeightTextNormalizesNonHundredTotals(t *testing.T) {
+	tests := []struct {
+		name   string
+		weight int64
+		total  int64
+		want   string
+	}{
+		{name: "hundred total stays literal", weight: 25, total: 100, want: "weight 25"},
+		{name: "quarter from four", weight: 1, total: 4, want: "weight 1 (25%)"},
+		{name: "third rounds to one decimal", weight: 1, total: 3, want: "weight 1 (33.3%)"},
+		{name: "zero total stays literal", weight: 1, total: 0, want: "weight 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayBackendWeightText(tt.weight, tt.total); got != tt.want {
+				t.Fatalf("gatewayBackendWeightText(%d, %d) = %q, want %q", tt.weight, tt.total, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1335,6 +1977,15 @@ func assertResultContains(t *testing.T, report *model.Report, status model.Statu
 		}
 	}
 	t.Fatalf("missing %s result containing %q in %#v", status, want, report.Results)
+}
+
+func assertResultNotContains(t *testing.T, report *model.Report, status model.Status, unwanted string) {
+	t.Helper()
+	for _, result := range report.Results {
+		if result.Status == status && strings.Contains(result.Message, unwanted) {
+			t.Fatalf("%s result should not contain %q: %q", status, unwanted, result.Message)
+		}
+	}
 }
 
 func assertGatewayDiagnosisContains(t *testing.T, report *model.Report, want string) {
