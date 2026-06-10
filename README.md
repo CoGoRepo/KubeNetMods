@@ -38,8 +38,9 @@ Use it when something should connect, but does not:
 - Istio AuthorizationPolicy DENY matches, ALLOW default-deny behavior, dry-run policy filtering, CUSTOM/external authz visibility, RequestAuthentication/JWT hints, Sidecar egress scope, PeerAuthentication mTLS posture, VirtualService routing, DestinationRule subsets, weighted routes, direct responses, redirects, fault injection, and client TLS mismatches
 - Istio mesh visibility guardrails for `VirtualService.spec.gateways`, `VirtualService.exportTo`, and `DestinationRule.exportTo` so `check service` focuses on config visible to the tested source-to-Service path
 - Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
-- Gateway API v1 static scans for GatewayClass, Gateway, listener status, HTTPRoute attachment, ReferenceGrant, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
-- Gateway API traffic-intent checks for host/path/method/header matching, listener and HTTPRoute hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
+- Gateway API v1 static scans for GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, ListenerSet, ReferenceGrant, BackendTLSPolicy, listener status, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
+- Gateway API traffic-intent checks for host/path/method/header/query matching, listener and HTTPRoute hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
+- Gateway API live HTTP/HTTPS probes that compare the advertised Gateway address with the in-cluster Gateway implementation Service path
 - NodePort and LoadBalancer exposure checks
 - external egress URL checks
 - policy blocker and preflight checks before a pod exists
@@ -67,7 +68,7 @@ When the evidence points below Kubernetes, `knm` reports that boundary instead o
 | `knm check service` | Troubleshoot a source workload reaching a Kubernetes Service. |
 | `knm check egress` | Troubleshoot a workload reaching an external URL. |
 | `knm check ingress` | Troubleshoot external or node-facing access to an app. |
-| `knm check gateway` | Scan Gateway API resources for obvious route, listener, reference, and backend problems. |
+| `knm check gateway` | Scan Gateway API resources or trace a specific Gateway request path. |
 | `knm show blockers` | Review policy blockers and preflight policy risk. |
 
 Short aliases:
@@ -319,9 +320,9 @@ Use this when Gateway API objects are involved in external access to an app.
 knm check gateway
 ```
 
-The no-parameter run is a static/status scan. It checks Gateway API v1 objects across the current cluster and reports obvious problems without running external probes or inferring a specific request path.
+The no-parameter run is a static/status scan. It checks Gateway API v1 objects across the current cluster and reports obvious problems without running live probes or inferring a specific request path.
 
-The broad scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute attachment/status, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
+The broad scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute/GRPCRoute/TLSRoute attachment and status, ListenerSet status and TLS refs, BackendTLSPolicy targets and CA refs, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
 
 Scope filters narrow that scan:
 
@@ -368,6 +369,19 @@ Traffic-intent mode traces the request through matching Gateway listeners, attac
 - traffic that matches a different backend Service than the one you expected
 
 `--url` owns scheme, host, port, path, and query. `--method`, `--header`, and `--expect-service` can be combined with `--url`. If you do not use `--url`, provide `--host`; `--path` defaults to `/` and `--method` defaults to `GET`.
+
+Gateway protocol inference supports HTTP/HTTPS request tracing today and safely identifies GRPCRoute/TLSRoute intent when you provide `--grpc-service`, `--grpc-method`, `--protocol grpc`, `--protocol tls`, or a TLS-style `--host ... --port 443`.
+
+Use `--probe` when you want runtime proof for an HTTP/HTTPS Gateway path:
+
+```powershell
+knm check gateway `
+  --url https://payments.example.com/api `
+  --probe `
+  --quiet
+```
+
+With `--probe`, KNM tests the advertised Gateway address from the workstation/client side and, when it can create or reuse a debug pod, the in-cluster Gateway implementation Service. That lets it separate "Gateway proxy works inside the cluster" from "the client cannot reach the advertised Gateway address."
 
 ## Show Policy Blockers
 

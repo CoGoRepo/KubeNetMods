@@ -303,9 +303,6 @@ func containerProblems(pod corev1.Pod) []string {
 		if status.State.Terminated != nil {
 			out = append(out, fmt.Sprintf("%s/%s=%s", pod.Name, status.Name, status.State.Terminated.Reason))
 		}
-		if status.LastTerminationState.Terminated != nil {
-			out = append(out, fmt.Sprintf("%s/%s=last:%s", pod.Name, status.Name, status.LastTerminationState.Terminated.Reason))
-		}
 	}
 	return out
 }

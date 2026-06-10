@@ -2,7 +2,10 @@ package check
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -22,33 +25,54 @@ import (
 )
 
 var (
-	gatewayClassGVR = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "gatewayclasses"}
-	gatewayGVR      = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "gateways"}
-	httpRouteGVR    = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "httproutes"}
-	referenceGVR    = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "referencegrants"}
+	backendTLSPolicyGVR = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "backendtlspolicies"}
+	gatewayClassGVR     = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "gatewayclasses"}
+	gatewayGVR          = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "gateways"}
+	grpcRouteGVR        = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "grpcroutes"}
+	httpRouteGVR        = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "httproutes"}
+	listenerSetGVR      = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "listenersets"}
+	referenceGVR        = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "referencegrants"}
+	tlsRouteGVR         = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "tlsroutes"}
 )
 
 type GatewayOptions struct {
-	Context       string
-	Namespace     string
-	GatewayRef    string
-	RouteRef      string
-	GatewayClass  string
-	URL           string
-	Host          string
-	Scheme        string
-	Path          string
-	Method        string
-	HTTPHeaders   map[string]string
-	ExpectService string
-	Limit         int
-	Wide          bool
-	Timeout       time.Duration
+	Context         string
+	Namespace       string
+	GatewayRef      string
+	RouteRef        string
+	GatewayClass    string
+	URL             string
+	Host            string
+	Scheme          string
+	Port            int32
+	Protocol        string
+	Path            string
+	Method          string
+	HTTPHeaders     map[string]string
+	GRPCService     string
+	GRPCMethod      string
+	ExpectService   string
+	Probe           bool
+	DebugImage      string
+	DebugPullPolicy string
+	DebugPodName    string
+	Limit           int
+	Wide            bool
+	Timeout         time.Duration
 }
 
 func RunGateway(ctx context.Context, opts GatewayOptions) (*model.Report, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
+	}
+	if opts.DebugImage == "" {
+		opts.DebugImage = "nicolaka/netshoot:latest"
+	}
+	if opts.DebugPullPolicy == "" {
+		opts.DebugPullPolicy = "IfNotPresent"
+	}
+	if opts.DebugPodName == "" {
+		opts.DebugPodName = "kubenetmods-gateway-debug"
 	}
 	target := model.Target{
 		Context:      opts.Context,
@@ -111,7 +135,7 @@ func RunGateway(ctx context.Context, opts GatewayOptions) (*model.Report, error)
 		report.Diagnose("Gateway API scan found failures, but no single dominant diagnosis was inferred yet. Review the failed Gateway, Route, and backend details.")
 	}
 	report.Limitations = append(report.Limitations,
-		"Gateway checks currently perform a static Kubernetes/Gateway API scan; they do not run external probes or inspect provider xDS/dataplane state yet.",
+		"Gateway checks inspect Kubernetes/Gateway API resources and can run HTTP/HTTPS probes with --probe; they do not inspect provider xDS/dataplane state yet.",
 	)
 	return report, nil
 }
@@ -131,9 +155,14 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 		parentGateways, parentGatewayErr = gatewayList(ctx, client, gatewayGVR, metav1.NamespaceAll)
 	}
 	routes, routeErr := gatewayList(ctx, client, httpRouteGVR, namespace)
+	grpcRoutes, grpcRouteErr := gatewayList(ctx, client, grpcRouteGVR, namespace)
+	tlsRoutes, tlsRouteErr := gatewayList(ctx, client, tlsRouteGVR, namespace)
+	listenerSets, listenerSetErr := gatewayList(ctx, client, listenerSetGVR, namespace)
+	backendTLSPolicies, backendTLSPolicyErr := gatewayList(ctx, client, backendTLSPolicyGVR, namespace)
 	refGrants, refGrantErr := gatewayList(ctx, client, referenceGVR, metav1.NamespaceAll)
 
-	if gatewayAPIMissing(classErr) && gatewayAPIMissing(gatewayErr) && gatewayAPIMissing(routeErr) && gatewayAPIMissing(parentGatewayErr) {
+	if gatewayAPIMissing(classErr) && gatewayAPIMissing(gatewayErr) && gatewayAPIMissing(routeErr) && gatewayAPIMissing(parentGatewayErr) &&
+		gatewayAPIMissing(grpcRouteErr) && gatewayAPIMissing(tlsRouteErr) && gatewayAPIMissing(listenerSetErr) && gatewayAPIMissing(backendTLSPolicyErr) {
 		report.Add("Gateway API Access", "v1 resources", model.StatusInfo, "Gateway API v1 resources were not found in this cluster.")
 		return
 	}
@@ -149,6 +178,18 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	if routeErr != nil && !gatewayAPIMissing(routeErr) {
 		scanner.addProblem("Gateway API Access", "HTTPRoute list", model.StatusWarn, fmt.Sprintf("Could not list HTTPRoute objects: %v", routeErr), "")
 	}
+	if grpcRouteErr != nil && !gatewayAPIMissing(grpcRouteErr) {
+		scanner.addProblem("Gateway API Access", "GRPCRoute list", model.StatusWarn, fmt.Sprintf("Could not list GRPCRoute objects: %v", grpcRouteErr), "")
+	}
+	if tlsRouteErr != nil && !gatewayAPIMissing(tlsRouteErr) {
+		scanner.addProblem("Gateway API Access", "TLSRoute list", model.StatusWarn, fmt.Sprintf("Could not list TLSRoute objects: %v", tlsRouteErr), "")
+	}
+	if listenerSetErr != nil && !gatewayAPIMissing(listenerSetErr) {
+		scanner.addProblem("Gateway API Access", "ListenerSet list", model.StatusWarn, fmt.Sprintf("Could not list ListenerSet objects: %v", listenerSetErr), "")
+	}
+	if backendTLSPolicyErr != nil && !gatewayAPIMissing(backendTLSPolicyErr) {
+		scanner.addProblem("Gateway API Access", "BackendTLSPolicy list", model.StatusWarn, fmt.Sprintf("Could not list BackendTLSPolicy objects: %v", backendTLSPolicyErr), "")
+	}
 	if refGrantErr != nil && !gatewayAPIMissing(refGrantErr) {
 		scanner.addProblem("Gateway API Access", "ReferenceGrant list", model.StatusWarn, fmt.Sprintf("Could not list ReferenceGrant objects: %v", refGrantErr), "")
 	}
@@ -156,6 +197,10 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	gatewaySortObjects(gateways)
 	gatewaySortObjects(parentGateways)
 	gatewaySortObjects(routes)
+	gatewaySortObjects(grpcRoutes)
+	gatewaySortObjects(tlsRoutes)
+	gatewaySortObjects(listenerSets)
+	gatewaySortObjects(backendTLSPolicies)
 	gatewaySortObjects(refGrants)
 
 	var classIndex map[string]unstructured.Unstructured
@@ -176,10 +221,14 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	}
 
 	scanner.scanGatewayClasses(classes)
-	scanner.scanGateways(ctx, client, gateways, classIndex, refGrants, routeParentFilter)
+	scanner.scanGateways(ctx, client, gateways, classIndex, refGrants, routeParentFilter, endpointReadyCache, endpointErrCache)
 	scanner.scanHTTPRoutes(ctx, client, routes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+	scanner.scanGenericRoutes(ctx, client, "GRPCRoute", grpcRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+	scanner.scanGenericRoutes(ctx, client, "TLSRoute", tlsRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+	scanner.scanListenerSets(ctx, client, listenerSets, parentGateways, refGrants)
+	scanner.scanBackendTLSPolicies(ctx, client, backendTLSPolicies, serviceCache, serviceErrCache)
 
-	scanner.finish(len(classes), len(gateways), len(routes))
+	scanner.finish(len(classes), len(gateways), len(routes), len(grpcRoutes), len(tlsRoutes), len(listenerSets), len(backendTLSPolicies))
 	dedupeGatewayDiagnoses(report)
 }
 
@@ -192,6 +241,7 @@ type gatewayScanner struct {
 	scannedClass  int
 	scannedGate   int
 	scannedRoutes int
+	scannedOther  int
 	trafficIntent bool
 }
 
@@ -216,7 +266,7 @@ func (s *gatewayScanner) addWide(layer, check string, status model.Status, messa
 	}
 }
 
-func (s *gatewayScanner) finish(classCount, gatewayCount, routeCount int) {
+func (s *gatewayScanner) finish(classCount, gatewayCount, routeCount int, extraCounts ...int) {
 	s.addFilterMissProblems()
 	filterText := s.filterText()
 	if filterText != "" {
@@ -225,7 +275,7 @@ func (s *gatewayScanner) finish(classCount, gatewayCount, routeCount int) {
 	if s.trafficIntent {
 		s.report.Add("Gateway API Access", "traffic scope", model.StatusInfo, fmt.Sprintf("Evaluated %d Gateway and %d HTTPRoute object(s) for the requested traffic intent%s.", s.scannedGate, s.scannedRoutes, filterText))
 	} else {
-		s.report.Add("Gateway API Access", "scan summary", model.StatusInfo, fmt.Sprintf("Scanned %d GatewayClass, %d Gateway, and %d HTTPRoute object(s)%s.", s.scannedClass, s.scannedGate, s.scannedRoutes, filterText))
+		s.report.Add("Gateway API Access", "scan summary", model.StatusInfo, fmt.Sprintf("Scanned %d GatewayClass, %d Gateway, %d HTTPRoute, and %d other Gateway API object(s)%s.", s.scannedClass, s.scannedGate, s.scannedRoutes, s.scannedOther, filterText))
 	}
 	if s.problemCount == 0 && !s.trafficIntent {
 		s.report.Add("Gateway API Scan", "obvious problems", model.StatusPass, "No obvious Gateway API status, attachment, reference, or backend endpoint problems found.")
@@ -233,8 +283,12 @@ func (s *gatewayScanner) finish(classCount, gatewayCount, routeCount int) {
 	if s.truncated {
 		s.report.Add("Gateway API Scan", "limit", model.StatusWarn, fmt.Sprintf("Scan found more than %d problem detail(s). Re-run with --limit %d or narrower filters for the full list.", s.limit, s.limit*2))
 	}
-	if classCount == 0 && gatewayCount == 0 && routeCount == 0 {
-		s.report.Add("Gateway API Scan", "objects", model.StatusInfo, "Gateway API v1 is available, but no GatewayClass, Gateway, or HTTPRoute objects matched the scan scope.")
+	totalExtra := 0
+	for _, count := range extraCounts {
+		totalExtra += count
+	}
+	if classCount == 0 && gatewayCount == 0 && routeCount == 0 && totalExtra == 0 {
+		s.report.Add("Gateway API Scan", "objects", model.StatusInfo, "Gateway API v1 is available, but no Gateway API objects matched the scan scope.")
 	}
 }
 
@@ -242,29 +296,38 @@ func gatewayTrafficIntentFromOptions(opts GatewayOptions) (gatewayTrafficIntent,
 	hasURL := strings.TrimSpace(opts.URL) != ""
 	hasPartialIntent := strings.TrimSpace(opts.Host) != "" ||
 		strings.TrimSpace(opts.Scheme) != "" ||
+		opts.Port != 0 ||
+		strings.TrimSpace(opts.Protocol) != "" ||
 		strings.TrimSpace(opts.Path) != "" ||
 		strings.TrimSpace(opts.Method) != "" ||
 		len(opts.HTTPHeaders) > 0 ||
+		strings.TrimSpace(opts.GRPCService) != "" ||
+		strings.TrimSpace(opts.GRPCMethod) != "" ||
 		strings.TrimSpace(opts.ExpectService) != ""
 	if !hasURL && !hasPartialIntent {
 		return gatewayTrafficIntent{}, false, nil
 	}
+	protocol, err := gatewayNormalizeProtocol(opts.Protocol)
+	if err != nil {
+		return gatewayTrafficIntent{}, true, err
+	}
 	intent := gatewayTrafficIntent{
-		Scheme:  strings.ToLower(strings.TrimSpace(opts.Scheme)),
-		Host:    gatewayNormalizeHostname(opts.Host),
-		Path:    strings.TrimSpace(opts.Path),
-		Method:  strings.ToUpper(strings.TrimSpace(opts.Method)),
-		Headers: opts.HTTPHeaders,
+		Scheme:      strings.ToLower(strings.TrimSpace(opts.Scheme)),
+		Host:        gatewayNormalizeHostname(opts.Host),
+		Port:        opts.Port,
+		Protocol:    protocol,
+		Path:        strings.TrimSpace(opts.Path),
+		Method:      strings.ToUpper(strings.TrimSpace(opts.Method)),
+		Headers:     opts.HTTPHeaders,
+		GRPCService: strings.TrimSpace(opts.GRPCService),
+		GRPCMethod:  strings.TrimSpace(opts.GRPCMethod),
 	}
-	if intent.Path == "" {
-		intent.Path = "/"
-	}
-	if !strings.HasPrefix(intent.Path, "/") {
+	if intent.Path != "" && !strings.HasPrefix(intent.Path, "/") {
 		return gatewayTrafficIntent{}, true, fmt.Errorf("Gateway traffic intent path %q is invalid; paths must start with /.", intent.Path)
 	}
 	if hasURL {
-		if opts.Host != "" || opts.Scheme != "" || opts.Path != "" {
-			return gatewayTrafficIntent{}, true, fmt.Errorf("--url owns scheme, host, port, path, and query; do not combine it with --host, --scheme, or --path.")
+		if opts.Host != "" || opts.Scheme != "" || opts.Port != 0 || opts.Path != "" {
+			return gatewayTrafficIntent{}, true, fmt.Errorf("--url owns scheme, host, port, path, and query; do not combine it with --host, --scheme, --port, or --path.")
 		}
 		parsed, err := url.Parse(strings.TrimSpace(opts.URL))
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -291,13 +354,111 @@ func gatewayTrafficIntentFromOptions(opts GatewayOptions) (gatewayTrafficIntent,
 	if intent.Host == "" {
 		return gatewayTrafficIntent{}, true, fmt.Errorf("Gateway traffic intent needs --host or --url; --path, --method, and --header only narrow a request after the host is known.")
 	}
-	if intent.Method == "" {
+	if intent.Protocol == "auto" {
+		intent.Protocol = gatewayInferApplicationProtocol(intent)
+	}
+	return gatewayFinalizeTrafficIntent(intent), true, nil
+}
+
+func gatewayNormalizeProtocol(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return "auto", nil
+	}
+	switch value {
+	case "auto", "http", "https", "grpc", "tls":
+		return value, nil
+	default:
+		return "", fmt.Errorf("Invalid Gateway traffic protocol %q. Use auto, http, https, grpc, or tls.", raw)
+	}
+}
+
+func gatewayInferApplicationProtocol(intent gatewayTrafficIntent) string {
+	if intent.GRPCService != "" || intent.GRPCMethod != "" {
+		return "grpc"
+	}
+	if intent.Scheme == "http" || intent.Scheme == "https" {
+		return intent.Scheme
+	}
+	if intent.Path != "" || intent.Method != "" || len(intent.Headers) > 0 || len(intent.Query) > 0 {
+		return "http"
+	}
+	if intent.Port == 443 {
+		return "tls"
+	}
+	return "http"
+}
+
+func gatewayFinalizeTrafficIntent(intent gatewayTrafficIntent) gatewayTrafficIntent {
+	if intent.Protocol == "" || intent.Protocol == "auto" {
+		intent.Protocol = gatewayInferApplicationProtocol(intent)
+	}
+	if len(intent.RouteFamilies) == 0 {
+		intent.RouteFamilies = gatewayRouteFamiliesForProtocol(intent.Protocol, intent)
+	}
+	if gatewayTrafficIntentUsesHTTP(intent) && intent.Path == "" {
+		intent.Path = "/"
+	}
+	if gatewayTrafficIntentUsesHTTP(intent) && intent.Method == "" {
 		intent.Method = "GET"
 	}
 	if intent.Port == 0 {
-		intent.Port = gatewayDefaultPortForScheme(intent.Scheme)
+		intent.Port = gatewayDefaultPortForIntent(intent)
 	}
-	return intent, true, nil
+	if intent.Scheme == "" {
+		intent.Scheme = gatewayDefaultSchemeForProtocol(intent.Protocol)
+	}
+	return intent
+}
+
+func gatewayRouteFamiliesForProtocol(protocol string, intent gatewayTrafficIntent) []string {
+	switch protocol {
+	case "grpc":
+		return []string{"GRPCRoute"}
+	case "tls":
+		return []string{"TLSRoute"}
+	case "http", "https":
+		return []string{"HTTPRoute"}
+	default:
+		if intent.GRPCService != "" || intent.GRPCMethod != "" {
+			return []string{"GRPCRoute"}
+		}
+		return []string{"HTTPRoute"}
+	}
+}
+
+func gatewayTrafficIntentUsesHTTP(intent gatewayTrafficIntent) bool {
+	for _, family := range intent.RouteFamilies {
+		if family == "HTTPRoute" {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayDefaultPortForIntent(intent gatewayTrafficIntent) int32 {
+	if port := gatewayDefaultPortForScheme(intent.Scheme); port != 0 {
+		return port
+	}
+	switch intent.Protocol {
+	case "https", "tls":
+		return 443
+	case "grpc":
+		return 0
+	default:
+		return 80
+	}
+}
+
+func gatewayDefaultSchemeForProtocol(protocol string) string {
+	switch protocol {
+	case "https":
+		return "https"
+	case "http":
+		return "http"
+	default:
+		return ""
+	}
 }
 
 func gatewayDefaultPortForScheme(scheme string) int32 {
@@ -319,6 +480,8 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 	routeNoParents := map[string]bool{}
 	routeRejected := map[string]bool{}
 	gatewayConcrete := map[string]bool{}
+	listenerSetRejected := map[string]bool{}
+	backendTLSPolicyConcrete := map[string]bool{}
 	trafficTLSConcrete := false
 	for _, diagnosis := range report.Diagnoses {
 		message := diagnosis.Message
@@ -333,6 +496,12 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 		}
 		if gateway := gatewayDiagnosisGateway(message); gateway != "" && gatewayDiagnosisIsConcreteGatewayTLS(message) {
 			gatewayConcrete[gateway] = true
+		}
+		if listenerSet := gatewayDiagnosisListenerSet(message); listenerSet != "" && gatewayDiagnosisIsListenerSetRejected(message) {
+			listenerSetRejected[listenerSet] = true
+		}
+		if policy := gatewayDiagnosisBackendTLSPolicy(message); policy != "" && gatewayDiagnosisIsConcreteBackendTLSPolicy(message) {
+			backendTLSPolicyConcrete[policy] = true
 		}
 		if gatewayDiagnosisIsConcreteTrafficTLS(message) {
 			trafficTLSConcrete = true
@@ -350,7 +519,19 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 		if route := gatewayDiagnosisHTTPRoute(message); route != "" && routeRejected[route] && gatewayDiagnosisIsRouteNoAcceptedParent(message) {
 			continue
 		}
+		if route := gatewayDiagnosisHTTPRoute(message); route != "" && routeRejected[route] && gatewayDiagnosisIsConcreteRouteBackend(message) {
+			continue
+		}
 		if gateway := gatewayDiagnosisListenerGateway(message); gateway != "" && gatewayConcrete[gateway] && gatewayDiagnosisIsListenerStatus(message) {
+			continue
+		}
+		if listenerSet := gatewayDiagnosisListenerSet(message); listenerSet != "" && listenerSetRejected[listenerSet] && gatewayDiagnosisIsListenerSetProgrammedStatus(message) {
+			continue
+		}
+		if listenerSet := gatewayDiagnosisListenerSet(message); listenerSet != "" && listenerSetRejected[listenerSet] && gatewayDiagnosisIsListenerSetTLSReference(message) {
+			continue
+		}
+		if policy := gatewayDiagnosisBackendTLSPolicy(message); policy != "" && backendTLSPolicyConcrete[policy] && gatewayDiagnosisIsBackendTLSPolicyStatus(message) {
 			continue
 		}
 		if trafficTLSConcrete && gatewayDiagnosisIsTrafficTLSStatus(message) {
@@ -365,7 +546,31 @@ func dedupeGatewayDiagnoses(report *model.Report) {
 }
 
 func gatewayDiagnosisHTTPRoute(message string) string {
-	if !strings.HasPrefix(message, "HTTPRoute ") {
+	if !strings.HasPrefix(message, "HTTPRoute ") &&
+		!strings.HasPrefix(message, "GRPCRoute ") &&
+		!strings.HasPrefix(message, "TLSRoute ") {
+		return ""
+	}
+	fields := strings.Fields(message)
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[1]
+}
+
+func gatewayDiagnosisListenerSet(message string) string {
+	if !strings.HasPrefix(message, "ListenerSet ") {
+		return ""
+	}
+	fields := strings.Fields(message)
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[1]
+}
+
+func gatewayDiagnosisBackendTLSPolicy(message string) string {
+	if !strings.HasPrefix(message, "BackendTLSPolicy ") {
 		return ""
 	}
 	fields := strings.Fields(message)
@@ -453,6 +658,35 @@ func gatewayDiagnosisIsTrafficTLSStatus(message string) bool {
 			strings.Contains(message, "references are not resolved:"))
 }
 
+func gatewayDiagnosisIsListenerSetRejected(message string) bool {
+	return strings.HasPrefix(message, "ListenerSet ") && strings.Contains(message, " is not Accepted:")
+}
+
+func gatewayDiagnosisIsListenerSetProgrammedStatus(message string) bool {
+	return strings.HasPrefix(message, "ListenerSet ") && strings.Contains(message, " is not Programmed:")
+}
+
+func gatewayDiagnosisIsListenerSetTLSReference(message string) bool {
+	return strings.HasPrefix(message, "ListenerSet ") &&
+		(strings.Contains(message, " references missing or unreadable TLS Secret ") ||
+			strings.Contains(message, " references TLS Secret ") && strings.Contains(message, "does not grant that reference"))
+}
+
+func gatewayDiagnosisIsConcreteBackendTLSPolicy(message string) bool {
+	return strings.HasPrefix(message, "BackendTLSPolicy ") &&
+		(strings.Contains(message, " targets Service ") ||
+			strings.Contains(message, " CA ConfigMap ") ||
+			strings.Contains(message, " does not specify caCertificateRefs") ||
+			strings.Contains(message, " specifies both caCertificateRefs") ||
+			strings.Contains(message, " uses unrecognized wellKnownCACertificates"))
+}
+
+func gatewayDiagnosisIsBackendTLSPolicyStatus(message string) bool {
+	return strings.HasPrefix(message, "BackendTLSPolicy ") &&
+		(strings.Contains(message, " is not Accepted:") ||
+			strings.Contains(message, " is not ResolvedRefs:"))
+}
+
 func (s *gatewayScanner) addFilterMissProblems() {
 	if s.opts.GatewayClass != "" && s.scannedClass == 0 {
 		s.addProblem("Gateway API Scan", "gateway-class filter", model.StatusFail, fmt.Sprintf("No GatewayClass matched %q.", s.opts.GatewayClass), fmt.Sprintf("GatewayClass %q was not found in the cluster.", s.opts.GatewayClass))
@@ -501,7 +735,7 @@ func (s *gatewayScanner) scanGatewayClasses(classes []unstructured.Unstructured)
 	}
 }
 
-func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, classes map[string]unstructured.Unstructured, refGrants []unstructured.Unstructured, routeParentFilter map[string]bool) {
+func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, classes map[string]unstructured.Unstructured, refGrants []unstructured.Unstructured, routeParentFilter map[string]bool, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
 	filter := parseGatewayObjectRef(s.opts.GatewayRef, s.opts.Namespace)
 	for _, gateway := range gateways {
 		if !gatewayObjectRefMatches(gateway, filter) {
@@ -534,7 +768,52 @@ func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, 
 			s.addProblem("Gateway Layer", gwName+" address", model.StatusWarn, fmt.Sprintf("Gateway %s has no status.addresses entries.", gwName), fmt.Sprintf("Gateway %s has no assigned address, so external clients may have no usable entry point yet.", gwName))
 		}
 		s.scanGatewayListeners(ctx, client, gateway, refGrants)
+		s.scanGatewayDataplane(ctx, client, gateway, endpointReadyCache, endpointErrCache)
 		s.addWide("Gateway Layer", gwName, model.StatusPass, fmt.Sprintf("Gateway %s scanned.", gwName))
+	}
+}
+
+func (s *gatewayScanner) scanGatewayDataplane(ctx context.Context, client *kube.Client, gateway unstructured.Unstructured, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+	services, err := gatewayImplementationServices(ctx, client, gateway)
+	gwName := objectRefText(gateway)
+	if err != nil {
+		s.addProblem("Gateway Dataplane Layer", gwName+" services", model.StatusWarn, fmt.Sprintf("Could not list implementation Services for Gateway %s: %v", gwName, err), "")
+		return
+	}
+	if len(services) == 0 {
+		s.addWide("Gateway Dataplane Layer", gwName+" services", model.StatusInfo, fmt.Sprintf("No implementation Service with label gateway.networking.k8s.io/gateway-name=%s was found for Gateway %s.", gateway.GetName(), gwName))
+		return
+	}
+	listeners := sliceField(gateway.Object, "spec", "listeners")
+	for _, service := range services {
+		serviceName := service.Namespace + "/" + service.Name
+		for _, raw := range listeners {
+			listener, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			listenerName := stringField(listener, "name")
+			listenerPort := int32FieldDefault(listener, "port", 0)
+			if listenerPort == 0 {
+				continue
+			}
+			if !serviceHasGatewayPort(&service, listenerPort) {
+				s.addProblem("Gateway Dataplane Layer", gwName+"/"+listenerName+" service port", model.StatusFail, fmt.Sprintf("Gateway %s listener %s port %d is not exposed by implementation Service %s. Service ports: %s", gwName, listenerName, listenerPort, serviceName, servicePorts(&service)), fmt.Sprintf("Gateway %s listener %s uses port %d, but implementation Service %s exposes %s.", gwName, listenerName, listenerPort, serviceName, servicePorts(&service)))
+			}
+		}
+		if service.Spec.Type == corev1.ServiceTypeLoadBalancer && len(service.Status.LoadBalancer.Ingress) == 0 {
+			s.addProblem("Gateway Dataplane Layer", serviceName+" load balancer", model.StatusWarn, fmt.Sprintf("Gateway implementation Service %s is LoadBalancer but has no external ingress address yet.", serviceName), fmt.Sprintf("Gateway implementation Service %s has no LoadBalancer ingress address yet.", serviceName))
+		}
+		ready, err := cachedReadyEndpointCount(ctx, client, service.Namespace, service.Name, endpointReadyCache, endpointErrCache)
+		if err != nil {
+			s.addProblem("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusWarn, fmt.Sprintf("Could not read EndpointSlices for Gateway implementation Service %s: %v", serviceName, err), "")
+			continue
+		}
+		if ready == 0 {
+			s.addProblem("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusFail, fmt.Sprintf("Gateway implementation Service %s has no ready EndpointSlice addresses.", serviceName), fmt.Sprintf("Gateway implementation Service %s has no ready endpoints, so Gateway traffic has no ready dataplane pod.", serviceName))
+			continue
+		}
+		s.addWide("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusPass, fmt.Sprintf("Gateway implementation Service %s has %d ready endpoint address(es).", serviceName, ready))
 	}
 }
 
@@ -631,17 +910,232 @@ func (s *gatewayScanner) scanHTTPRoutes(ctx context.Context, client *kube.Client
 		}
 		s.scannedRoutes++
 		routeName := objectRefText(route)
-		s.scanHTTPRouteParents(route, gatewayIndex)
-		s.scanHTTPRouteBackendRefs(ctx, client, route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		s.scanRouteParents("HTTPRoute", route, gatewayIndex)
+		s.scanRouteBackendRefs(ctx, client, "HTTPRoute", route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 		s.addWide("HTTPRoute Layer", routeName, model.StatusPass, fmt.Sprintf("HTTPRoute %s scanned.", routeName))
 	}
 }
 
+func (s *gatewayScanner) scanGenericRoutes(ctx context.Context, client *kube.Client, kind string, routes []unstructured.Unstructured, gateways []unstructured.Unstructured, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+	filter := parseGatewayObjectRef(s.opts.RouteRef, s.opts.Namespace)
+	gatewayFilter := parseGatewayObjectRef(s.opts.GatewayRef, s.opts.Namespace)
+	gatewayIndex := gatewayIndex(gateways)
+	for _, route := range routes {
+		if !gatewayObjectRefMatches(route, filter) {
+			continue
+		}
+		if !routeMatchesGatewayFilter(route, gatewayFilter) {
+			continue
+		}
+		s.scannedOther++
+		routeName := objectRefText(route)
+		s.scanRouteParents(kind, route, gatewayIndex)
+		s.scanRouteBackendRefs(ctx, client, kind, route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		s.addWide(kind+" Layer", routeName, model.StatusPass, fmt.Sprintf("%s %s scanned.", kind, routeName))
+	}
+}
+
+func (s *gatewayScanner) scanListenerSets(ctx context.Context, client *kube.Client, listenerSets []unstructured.Unstructured, gateways []unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	filter := parseGatewayObjectRef(s.opts.GatewayRef, s.opts.Namespace)
+	gatewayIndex := gatewayIndex(gateways)
+	for _, listenerSet := range listenerSets {
+		parent := mapField(listenerSet.Object, "spec", "parentRef")
+		parentName := stringField(parent, "name")
+		parentNS := defaultString(stringField(parent, "namespace"), listenerSet.GetNamespace())
+		if filter.Name != "" && (parentName != filter.Name || filter.Namespace != "" && parentNS != filter.Namespace) {
+			continue
+		}
+		s.scannedOther++
+		name := objectRefText(listenerSet)
+		if parentName == "" {
+			s.addProblem("ListenerSet Layer", name+" parent", model.StatusFail, fmt.Sprintf("ListenerSet %s has no spec.parentRef.name.", name), fmt.Sprintf("ListenerSet %s has no parent Gateway reference, so its listeners cannot be attached.", name))
+		} else if _, ok := gatewayIndex[parentNS+"/"+parentName]; !ok {
+			s.addProblem("ListenerSet Layer", name+" parent", model.StatusFail, fmt.Sprintf("ListenerSet %s references missing parent Gateway %s/%s.", name, parentNS, parentName), fmt.Sprintf("ListenerSet %s references Gateway %s/%s, but that Gateway was not found.", name, parentNS, parentName))
+		}
+		s.addConditionProblems("ListenerSet Layer", "ListenerSet", name, listenerSet.Object, []gatewayConditionRule{
+			{Type: "Accepted", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
+			{Type: "Programmed", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
+		})
+		listeners := sliceField(listenerSet.Object, "spec", "listeners")
+		if len(listeners) == 0 {
+			s.addProblem("ListenerSet Layer", name+" listeners", model.StatusFail, fmt.Sprintf("ListenerSet %s has no spec.listeners entries.", name), fmt.Sprintf("ListenerSet %s has no listeners, so it does not add any usable Gateway entry points.", name))
+		}
+		statusListeners := gatewayStatusListeners(listenerSet.Object)
+		for _, raw := range listeners {
+			listener, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			listenerName := stringField(listener, "name")
+			check := name + "/" + listenerName
+			s.addListenerConditionProblems(check, statusListeners[listenerName])
+			s.scanListenerSetTLSRefs(ctx, client, listenerSet, listener, refGrants)
+		}
+		s.addWide("ListenerSet Layer", name, model.StatusPass, fmt.Sprintf("ListenerSet %s scanned.", name))
+	}
+}
+
+func (s *gatewayScanner) scanListenerSetTLSRefs(ctx context.Context, client *kube.Client, listenerSet unstructured.Unstructured, listener map[string]interface{}, refGrants []unstructured.Unstructured) {
+	certRefs := sliceField(listener, "tls", "certificateRefs")
+	if len(certRefs) == 0 {
+		return
+	}
+	name := objectRefText(listenerSet)
+	for _, raw := range certRefs {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		certName := stringField(ref, "name")
+		if certName == "" {
+			continue
+		}
+		group := stringField(ref, "group")
+		kind := defaultString(stringField(ref, "kind"), "Secret")
+		namespace := defaultString(stringField(ref, "namespace"), listenerSet.GetNamespace())
+		check := fmt.Sprintf("%s cert %s/%s", name, namespace, certName)
+		if group != "" || kind != "Secret" {
+			s.addProblem("TLS Reference Layer", check, model.StatusWarn, fmt.Sprintf("ListenerSet %s listener certificateRef %s/%s is %s/%s; KNM only validates core Secret refs right now.", name, namespace, certName, group, kind), "")
+			continue
+		}
+		if namespace != listenerSet.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, "ListenerSet", listenerSet.GetNamespace(), "", "Secret", certName, namespace) {
+			s.addProblem("TLS Reference Layer", check, model.StatusFail, fmt.Sprintf("ListenerSet %s references cross-namespace TLS Secret %s/%s without a matching ReferenceGrant.", name, namespace, certName), fmt.Sprintf("ListenerSet %s references TLS Secret %s/%s across namespaces, but the Secret namespace does not grant that reference.", name, namespace, certName))
+			continue
+		}
+		if _, err := client.Core.CoreV1().Secrets(namespace).Get(ctx, certName, metav1.GetOptions{}); err != nil {
+			s.addProblem("TLS Reference Layer", check, model.StatusFail, fmt.Sprintf("ListenerSet %s references TLS Secret %s/%s, but it was not found or is unreadable: %v", name, namespace, certName, err), fmt.Sprintf("ListenerSet %s references missing or unreadable TLS Secret %s/%s.", name, namespace, certName))
+		}
+	}
+}
+
+func (s *gatewayScanner) scanBackendTLSPolicies(ctx context.Context, client *kube.Client, policies []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	for _, policy := range policies {
+		s.scannedOther++
+		name := objectRefText(policy)
+		s.scanBackendTLSPolicyTargets(ctx, client, policy, serviceCache, serviceErrCache)
+		s.scanBackendTLSPolicyValidation(ctx, client, policy)
+		s.scanBackendTLSPolicyStatus(policy)
+		s.addWide("BackendTLSPolicy Layer", name, model.StatusPass, fmt.Sprintf("BackendTLSPolicy %s scanned.", name))
+	}
+}
+
+func (s *gatewayScanner) scanBackendTLSPolicyTargets(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	name := objectRefText(policy)
+	targetRefs := sliceField(policy.Object, "spec", "targetRefs")
+	if len(targetRefs) == 0 {
+		s.addProblem("BackendTLSPolicy Layer", name+" target", model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s has no spec.targetRefs entries.", name), fmt.Sprintf("BackendTLSPolicy %s has no targetRefs, so it cannot apply backend TLS settings to any Service.", name))
+		return
+	}
+	for index, raw := range targetRefs {
+		target, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		targetName := stringField(target, "name")
+		if targetName == "" {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s target %d", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s targetRef %d has no name.", name, index+1), fmt.Sprintf("BackendTLSPolicy %s has a targetRef with no name.", name))
+			continue
+		}
+		group := stringField(target, "group")
+		kind := defaultString(stringField(target, "kind"), "Service")
+		if group != "" || kind != "Service" {
+			message := fmt.Sprintf("BackendTLSPolicy %s targets backend kind %s %s/%s; KNM does not evaluate that target type.", name, gatewayBackendKindText(group, kind), policy.GetNamespace(), targetName)
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s target %d", name, index+1), model.StatusWarn, message, message)
+			continue
+		}
+		service, err := cachedService(ctx, client, policy.GetNamespace(), targetName, serviceCache, serviceErrCache)
+		if err != nil {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s target %d", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s targets missing/unreadable Service %s/%s: %v", name, policy.GetNamespace(), targetName, err), fmt.Sprintf("BackendTLSPolicy %s targets Service %s/%s, but that Service is missing or unreadable.", name, policy.GetNamespace(), targetName))
+			continue
+		}
+		if sectionName := stringField(target, "sectionName"); sectionName != "" && !serviceHasPortName(service, sectionName) {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s target %d section", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s targets Service %s/%s sectionName %q, but the Service has ports %s.", name, policy.GetNamespace(), targetName, sectionName, servicePorts(service)), fmt.Sprintf("BackendTLSPolicy %s targets Service %s/%s sectionName %q, but that Service port name does not exist.", name, policy.GetNamespace(), targetName, sectionName))
+		}
+	}
+}
+
+func (s *gatewayScanner) scanBackendTLSPolicyValidation(ctx context.Context, client *kube.Client, policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	validation := mapField(policy.Object, "spec", "validation")
+	caRefs := sliceField(validation, "caCertificateRefs")
+	wellKnown := stringField(validation, "wellKnownCACertificates")
+	if len(caRefs) == 0 && wellKnown == "" {
+		s.addProblem("BackendTLSPolicy Layer", name+" validation", model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s has no CA validation source.", name), fmt.Sprintf("BackendTLSPolicy %s does not specify caCertificateRefs or wellKnownCACertificates.", name))
+	}
+	if len(caRefs) > 0 && wellKnown != "" {
+		s.addProblem("BackendTLSPolicy Layer", name+" validation", model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s specifies both caCertificateRefs and wellKnownCACertificates.", name), fmt.Sprintf("BackendTLSPolicy %s specifies both caCertificateRefs and wellKnownCACertificates.", name))
+	}
+	if wellKnown != "" && wellKnown != "System" && !strings.Contains(wellKnown, "/") {
+		s.addProblem("BackendTLSPolicy Layer", name+" wellKnownCACertificates", model.StatusWarn, fmt.Sprintf("BackendTLSPolicy %s uses unrecognized wellKnownCACertificates value %q.", name, wellKnown), fmt.Sprintf("BackendTLSPolicy %s uses unrecognized wellKnownCACertificates value %q.", name, wellKnown))
+	}
+	for index, raw := range caRefs {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		refName := stringField(ref, "name")
+		if refName == "" {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s caCertificateRef %d", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s caCertificateRef %d has no name.", name, index+1), fmt.Sprintf("BackendTLSPolicy %s has a caCertificateRef with no name.", name))
+			continue
+		}
+		group := stringField(ref, "group")
+		kind := defaultString(stringField(ref, "kind"), "ConfigMap")
+		if group != "" || kind != "ConfigMap" {
+			message := fmt.Sprintf("BackendTLSPolicy %s caCertificateRef %d uses %s/%s %s; KNM only validates core ConfigMap CA refs right now.", name, index+1, group, kind, refName)
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s caCertificateRef %d", name, index+1), model.StatusWarn, message, message)
+			continue
+		}
+		cm, err := client.Core.CoreV1().ConfigMaps(policy.GetNamespace()).Get(ctx, refName, metav1.GetOptions{})
+		if err != nil {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s caCertificateRef %d", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s references missing/unreadable CA ConfigMap %s/%s: %v", name, policy.GetNamespace(), refName, err), fmt.Sprintf("BackendTLSPolicy %s references CA ConfigMap %s/%s, but that ConfigMap is missing or unreadable.", name, policy.GetNamespace(), refName))
+			continue
+		}
+		if _, ok := cm.Data["ca.crt"]; !ok {
+			s.addProblem("BackendTLSPolicy Layer", fmt.Sprintf("%s caCertificateRef %d", name, index+1), model.StatusFail, fmt.Sprintf("BackendTLSPolicy %s CA ConfigMap %s/%s does not contain key ca.crt.", name, policy.GetNamespace(), refName), fmt.Sprintf("BackendTLSPolicy %s CA ConfigMap %s/%s is missing key ca.crt.", name, policy.GetNamespace(), refName))
+		}
+	}
+}
+
+func (s *gatewayScanner) scanBackendTLSPolicyStatus(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	ancestors := sliceField(policy.Object, "status", "ancestors")
+	if len(ancestors) == 0 {
+		s.addProblem("BackendTLSPolicy Layer", name+" status", model.StatusWarn, fmt.Sprintf("BackendTLSPolicy %s has no status.ancestors entries.", name), "")
+		return
+	}
+	for index, raw := range ancestors {
+		ancestor, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		check := fmt.Sprintf("%s ancestor %d", name, index+1)
+		for _, rule := range []gatewayConditionRule{
+			{Type: "Accepted", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
+			{Type: "ResolvedRefs", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
+		} {
+			cond, ok := conditionByType(ancestor, rule.Type)
+			if !ok {
+				if rule.MissingStatus != "" {
+					s.addProblem("BackendTLSPolicy Layer", check+" "+rule.Type, rule.MissingStatus, fmt.Sprintf("BackendTLSPolicy %s ancestor %d has no %s condition.", name, index+1, rule.Type), "")
+				}
+				continue
+			}
+			if strings.EqualFold(cond.Status, "False") {
+				s.addProblem("BackendTLSPolicy Layer", check+" "+rule.Type, rule.FalseStatus, fmt.Sprintf("BackendTLSPolicy %s ancestor %d condition %s=False: %s%s", name, index+1, rule.Type, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("BackendTLSPolicy %s is not %s: %s%s", name, rule.Type, cond.Reason, conditionMessageSuffix(cond.Message)))
+			}
+		}
+	}
+}
+
 func (s *gatewayScanner) scanHTTPRouteParents(route unstructured.Unstructured, gatewayIndex map[string]unstructured.Unstructured) {
+	s.scanRouteParents("HTTPRoute", route, gatewayIndex)
+}
+
+func (s *gatewayScanner) scanRouteParents(kind string, route unstructured.Unstructured, gatewayIndex map[string]unstructured.Unstructured) {
 	routeName := objectRefText(route)
 	parentRefs := sliceField(route.Object, "spec", "parentRefs")
 	if len(parentRefs) == 0 {
-		s.addProblem("Route Attachment Layer", routeName, model.StatusWarn, fmt.Sprintf("HTTPRoute %s has no spec.parentRefs.", routeName), fmt.Sprintf("HTTPRoute %s is not attached to any Gateway, so it will not receive Gateway traffic.", routeName))
+		s.addProblem("Route Attachment Layer", routeName, model.StatusWarn, fmt.Sprintf("%s %s has no spec.parentRefs.", kind, routeName), fmt.Sprintf("%s %s is not attached to any Gateway, so it will not receive Gateway traffic.", kind, routeName))
 	}
 	for _, raw := range parentRefs {
 		parent, ok := raw.(map[string]interface{})
@@ -657,15 +1151,16 @@ func (s *gatewayScanner) scanHTTPRouteParents(route unstructured.Unstructured, g
 			continue
 		}
 		if _, ok := gatewayIndex[parentNS+"/"+parentName]; !ok {
-			s.addProblem("Route Attachment Layer", routeName+" parent", model.StatusFail, fmt.Sprintf("HTTPRoute %s references missing parent Gateway %s/%s.", routeName, parentNS, parentName), fmt.Sprintf("HTTPRoute %s references Gateway %s/%s, but that Gateway was not found.", routeName, parentNS, parentName))
+			s.addProblem("Route Attachment Layer", routeName+" parent", model.StatusFail, fmt.Sprintf("%s %s references missing parent Gateway %s/%s.", kind, routeName, parentNS, parentName), fmt.Sprintf("%s %s references Gateway %s/%s, but that Gateway was not found.", kind, routeName, parentNS, parentName))
 		}
 	}
 	parents := sliceField(route.Object, "status", "parents")
 	if len(parents) == 0 {
-		s.addProblem("Route Attachment Layer", routeName+" status", model.StatusWarn, fmt.Sprintf("HTTPRoute %s has no status.parents entries.", routeName), fmt.Sprintf("HTTPRoute %s has no parent status, so no Gateway has reported accepting it yet.", routeName))
+		s.addProblem("Route Attachment Layer", routeName+" status", model.StatusWarn, fmt.Sprintf("%s %s has no status.parents entries.", kind, routeName), fmt.Sprintf("%s %s has no parent status, so no Gateway has reported accepting it yet.", kind, routeName))
 		return
 	}
 	accepted := false
+	acceptedConditionSeen := false
 	for _, raw := range parents {
 		parent, ok := raw.(map[string]interface{})
 		if !ok {
@@ -673,26 +1168,31 @@ func (s *gatewayScanner) scanHTTPRouteParents(route unstructured.Unstructured, g
 		}
 		parentText := routeParentStatusText(route.GetNamespace(), parent)
 		if cond, ok := conditionByType(parent, string(gatewayv1.RouteConditionAccepted)); ok {
+			acceptedConditionSeen = true
 			if strings.EqualFold(cond.Status, "True") {
 				accepted = true
 			}
 			if strings.EqualFold(cond.Status, "False") {
-				s.addProblem("Route Attachment Layer", routeName+" Accepted", model.StatusFail, fmt.Sprintf("HTTPRoute %s is not accepted by %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("HTTPRoute %s is not accepted by %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
+				s.addProblem("Route Attachment Layer", routeName+" Accepted", model.StatusFail, fmt.Sprintf("%s %s is not accepted by %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("%s %s is not accepted by %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
 			}
 		}
 		if cond, ok := conditionByType(parent, string(gatewayv1.RouteConditionResolvedRefs)); ok && strings.EqualFold(cond.Status, "False") {
-			s.addProblem("Route Attachment Layer", routeName+" ResolvedRefs", model.StatusFail, fmt.Sprintf("HTTPRoute %s has unresolved refs for %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("HTTPRoute %s has unresolved references for %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
+			s.addProblem("Route Attachment Layer", routeName+" ResolvedRefs", model.StatusFail, fmt.Sprintf("%s %s has unresolved refs for %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("%s %s has unresolved references for %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
 		}
 		if cond, ok := conditionByType(parent, string(gatewayv1.RouteConditionPartiallyInvalid)); ok && strings.EqualFold(cond.Status, "True") {
-			s.addProblem("Route Attachment Layer", routeName+" PartiallyInvalid", model.StatusWarn, fmt.Sprintf("HTTPRoute %s is partially invalid for %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("HTTPRoute %s is partially invalid for %s: %s%s", routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
+			s.addProblem("Route Attachment Layer", routeName+" PartiallyInvalid", model.StatusWarn, fmt.Sprintf("%s %s is partially invalid for %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)), fmt.Sprintf("%s %s is partially invalid for %s: %s%s", kind, routeName, parentText, cond.Reason, conditionMessageSuffix(cond.Message)))
 		}
 	}
-	if !accepted {
-		s.addProblem("Route Attachment Layer", routeName+" accepted", model.StatusWarn, fmt.Sprintf("HTTPRoute %s has no Accepted=True parent status.", routeName), fmt.Sprintf("HTTPRoute %s is not currently accepted by any Gateway parent.", routeName))
+	if !accepted && !acceptedConditionSeen {
+		s.addProblem("Route Attachment Layer", routeName+" accepted", model.StatusWarn, fmt.Sprintf("%s %s has no Accepted=True parent status.", kind, routeName), fmt.Sprintf("%s %s is not currently accepted by any Gateway parent.", kind, routeName))
 	}
 }
 
 func (s *gatewayScanner) scanHTTPRouteBackendRefs(ctx context.Context, client *kube.Client, route unstructured.Unstructured, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+	s.scanRouteBackendRefs(ctx, client, "HTTPRoute", route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+}
+
+func (s *gatewayScanner) scanRouteBackendRefs(ctx context.Context, client *kube.Client, kind string, route unstructured.Unstructured, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
 	routeName := objectRefText(route)
 	rules := sliceField(route.Object, "spec", "rules")
 	for ruleIndex, rawRule := range rules {
@@ -702,10 +1202,10 @@ func (s *gatewayScanner) scanHTTPRouteBackendRefs(ctx context.Context, client *k
 		}
 		backendRefs := sliceField(rule, "backendRefs")
 		if len(backendRefs) == 0 {
-			if httpRouteRuleHasRedirect(rule) {
+			if kind == "HTTPRoute" && httpRouteRuleHasRedirect(rule) {
 				continue
 			}
-			s.addProblem("BackendRef Layer", fmt.Sprintf("%s rule %d", routeName, ruleIndex+1), model.StatusWarn, fmt.Sprintf("HTTPRoute %s rule %d has no backendRefs.", routeName, ruleIndex+1), fmt.Sprintf("HTTPRoute %s rule %d has no backendRefs, so matching traffic will not be sent to a Service backend.", routeName, ruleIndex+1))
+			s.addProblem("BackendRef Layer", fmt.Sprintf("%s rule %d", routeName, ruleIndex+1), model.StatusWarn, fmt.Sprintf("%s %s rule %d has no backendRefs.", kind, routeName, ruleIndex+1), fmt.Sprintf("%s %s rule %d has no backendRefs, so matching traffic will not be sent to a Service backend.", kind, routeName, ruleIndex+1))
 			continue
 		}
 		for backendIndex, rawBackend := range backendRefs {
@@ -716,7 +1216,7 @@ func (s *gatewayScanner) scanHTTPRouteBackendRefs(ctx context.Context, client *k
 			if gatewayBackendRefWeight(backend) == 0 {
 				continue
 			}
-			s.scanHTTPRouteBackendRef(ctx, client, route, ruleIndex+1, backendIndex+1, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+			s.scanRouteBackendRef(ctx, client, kind, route, ruleIndex+1, backendIndex+1, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 		}
 	}
 }
@@ -725,45 +1225,56 @@ func (s *gatewayScanner) scanHTTPRouteBackendRef(ctx context.Context, client *ku
 	if gatewayBackendRefWeight(backend) == 0 {
 		return
 	}
-	s.scanHTTPRouteBackendRefWithDiagnosis(ctx, client, route, ruleNumber, backendNumber, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache, true)
+	s.scanRouteBackendRef(ctx, client, "HTTPRoute", route, ruleNumber, backendNumber, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 }
 
 func (s *gatewayScanner) scanHTTPRouteBackendRefWithDiagnosis(ctx context.Context, client *kube.Client, route unstructured.Unstructured, ruleNumber, backendNumber int, backend map[string]interface{}, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error, addDiagnosis bool) {
+	s.scanRouteBackendRefWithDiagnosis(ctx, client, "HTTPRoute", route, ruleNumber, backendNumber, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache, addDiagnosis)
+}
+
+func (s *gatewayScanner) scanRouteBackendRef(ctx context.Context, client *kube.Client, kind string, route unstructured.Unstructured, ruleNumber, backendNumber int, backend map[string]interface{}, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+	if gatewayBackendRefWeight(backend) == 0 {
+		return
+	}
+	s.scanRouteBackendRefWithDiagnosis(ctx, client, kind, route, ruleNumber, backendNumber, backend, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache, true)
+}
+
+func (s *gatewayScanner) scanRouteBackendRefWithDiagnosis(ctx context.Context, client *kube.Client, kind string, route unstructured.Unstructured, ruleNumber, backendNumber int, backend map[string]interface{}, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error, addDiagnosis bool) {
 	if gatewayBackendRefWeight(backend) == 0 {
 		return
 	}
 	routeName := objectRefText(route)
 	name := stringField(backend, "name")
 	if name == "" {
-		s.addProblem("BackendRef Layer", fmt.Sprintf("%s rule %d backend %d", routeName, ruleNumber, backendNumber), model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d backendRef %d has no name.", routeName, ruleNumber, backendNumber), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s rule %d has a backendRef with no name.", routeName, ruleNumber)))
+		s.addProblem("BackendRef Layer", fmt.Sprintf("%s rule %d backend %d", routeName, ruleNumber, backendNumber), model.StatusFail, fmt.Sprintf("%s %s rule %d backendRef %d has no name.", kind, routeName, ruleNumber, backendNumber), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s rule %d has a backendRef with no name.", kind, routeName, ruleNumber)))
 		return
 	}
 	group := stringField(backend, "group")
-	kind := defaultString(stringField(backend, "kind"), "Service")
+	backendKind := defaultString(stringField(backend, "kind"), "Service")
 	namespace := defaultString(stringField(backend, "namespace"), route.GetNamespace())
 	port, portOK := int32Field(backend, "port")
 	backendText := fmt.Sprintf("%s/%s", namespace, name)
 	check := fmt.Sprintf("%s rule %d backend %d %s", routeName, ruleNumber, backendNumber, backendText)
-	if group != "" || kind != "Service" {
-		message := fmt.Sprintf("HTTPRoute %s rule %d routes to backend kind %s %s; KNM does not evaluate that backend type.", routeName, ruleNumber, gatewayBackendKindText(group, kind), backendText)
+	if group != "" || backendKind != "Service" {
+		message := fmt.Sprintf("%s %s rule %d routes to backend kind %s %s; KNM does not evaluate that backend type.", route.GetKind(), routeName, ruleNumber, gatewayBackendKindText(group, backendKind), backendText)
 		s.addProblem("BackendRef Layer", check, model.StatusWarn, message, gatewayOptionalDiagnosis(addDiagnosis, message))
 		return
 	}
-	if namespace != route.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, "HTTPRoute", route.GetNamespace(), "", "Service", name, namespace) {
-		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d references cross-namespace Service %s without a matching ReferenceGrant.", routeName, ruleNumber, backendText), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s rule %d routes to Service %s across namespaces, but namespace %q does not grant that reference.", routeName, ruleNumber, backendText, namespace)))
+	if namespace != route.GetNamespace() && !referenceGrantAllows(refGrants, gatewayv1.GroupName, route.GetKind(), route.GetNamespace(), "", "Service", name, namespace) {
+		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("%s %s rule %d references cross-namespace Service %s without a matching ReferenceGrant.", route.GetKind(), routeName, ruleNumber, backendText), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s rule %d routes to Service %s across namespaces, but namespace %q does not grant that reference.", route.GetKind(), routeName, ruleNumber, backendText, namespace)))
 		return
 	}
 	if !portOK {
-		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d backendRef %s has no numeric port.", routeName, ruleNumber, backendText), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s backendRef %s does not specify a Service port.", routeName, backendText)))
+		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("%s %s rule %d backendRef %s has no numeric port.", route.GetKind(), routeName, ruleNumber, backendText), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s backendRef %s does not specify a Service port.", route.GetKind(), routeName, backendText)))
 		return
 	}
 	service, err := cachedService(ctx, client, namespace, name, serviceCache, serviceErrCache)
 	if err != nil {
-		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d backendRef points at missing/unreadable Service %s: %v", routeName, ruleNumber, backendText, err), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s rule %d routes to Service %s, but that Service is missing or unreadable.", routeName, ruleNumber, backendText)))
+		s.addProblem("BackendRef Layer", check, model.StatusFail, fmt.Sprintf("%s %s rule %d backendRef points at missing/unreadable Service %s: %v", route.GetKind(), routeName, ruleNumber, backendText, err), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s rule %d routes to Service %s, but that Service is missing or unreadable.", route.GetKind(), routeName, ruleNumber, backendText)))
 		return
 	}
 	if !serviceHasGatewayPort(service, port) {
-		s.addProblem("BackendRef Layer", check+" port", model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d backendRef uses Service %s port %d, but that port is not exposed. Service ports: %s", routeName, ruleNumber, backendText, port, servicePorts(service)), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s rule %d routes to Service %s port %d, but the Service exposes %s.", routeName, ruleNumber, backendText, port, servicePorts(service))))
+		s.addProblem("BackendRef Layer", check+" port", model.StatusFail, fmt.Sprintf("%s %s rule %d backendRef uses Service %s port %d, but that port is not exposed. Service ports: %s", route.GetKind(), routeName, ruleNumber, backendText, port, servicePorts(service)), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s rule %d routes to Service %s port %d, but the Service exposes %s.", route.GetKind(), routeName, ruleNumber, backendText, port, servicePorts(service))))
 		return
 	}
 	if service.Spec.Type == corev1.ServiceTypeExternalName {
@@ -781,7 +1292,7 @@ func (s *gatewayScanner) scanHTTPRouteBackendRefWithDiagnosis(ctx context.Contex
 		if weight > 0 {
 			weightText = fmt.Sprintf(" weight %d", weight)
 		}
-		s.addProblem("Backend Endpoint Layer", check, model.StatusFail, fmt.Sprintf("HTTPRoute %s rule %d backendRef%s points at Service %s port %d, but the Service has no ready EndpointSlice addresses.", routeName, ruleNumber, weightText, backendText, port), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("HTTPRoute %s rule %d routes to Service %s port %d, but that Service has no ready endpoints.", routeName, ruleNumber, backendText, port)))
+		s.addProblem("Backend Endpoint Layer", check, model.StatusFail, fmt.Sprintf("%s %s rule %d backendRef%s points at Service %s port %d, but the Service has no ready EndpointSlice addresses.", route.GetKind(), routeName, ruleNumber, weightText, backendText, port), gatewayOptionalDiagnosis(addDiagnosis, fmt.Sprintf("%s %s rule %d routes to Service %s port %d, but that Service has no ready endpoints.", route.GetKind(), routeName, ruleNumber, backendText, port)))
 	}
 }
 
@@ -793,9 +1304,17 @@ func gatewayOptionalDiagnosis(enabled bool, diagnosis string) string {
 }
 
 func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, parentGateways []unstructured.Unstructured, routes []unstructured.Unstructured, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error, intent gatewayTrafficIntent) {
+	intent = gatewayFinalizeTrafficIntent(intent)
 	scopedGateways := s.gatewayTrafficScopedGateways(gateways)
 	scopedParentGateways := s.gatewayTrafficScopedGateways(parentGateways)
 	scopedRoutes := s.gatewayTrafficScopedRoutes(routes)
+	s.report.Add("Gateway Traffic Intent", "protocol inference", model.StatusInfo, fmt.Sprintf("Inferred protocol=%s route family=%s.", intent.Protocol, strings.Join(intent.RouteFamilies, ",")))
+	if !gatewayTrafficIntentUsesHTTP(intent) {
+		s.scannedGate = len(scopedGateways)
+		s.scannedRoutes = 0
+		s.report.Add("Gateway Traffic Intent", "route family", model.StatusWarn, fmt.Sprintf("Detailed %s traffic tracing is not implemented yet. Run knm gateway without traffic-intent flags for broad static checks on that route family.", strings.Join(intent.RouteFamilies, "/")))
+		return
+	}
 	listeners := gatewayTrafficMatchingListeners(scopedParentGateways, intent)
 	attachedRoutes := gatewayTrafficAttachedRoutes(scopedRoutes, listeners)
 	s.addGatewayTrafficScope(intent, listeners, attachedRoutes)
@@ -875,9 +1394,343 @@ func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *k
 		s.report.Add("Gateway Traffic Path", analyses[0].RouteName+" rule "+strconv.Itoa(analyses[0].RuleNumber)+" weighted backendRefs", model.StatusWarn, message)
 		s.report.Diagnose(message)
 	}
+	if s.opts.Probe {
+		s.addGatewayTrafficDataplaneContext(ctx, client, scopedParentGateways, matches, endpointReadyCache, endpointErrCache)
+		s.runGatewayHTTPProbes(ctx, client, scopedParentGateways, matches, intent)
+	}
 	if s.report.CountByStatus(model.StatusFail) == 0 && s.report.CountByStatus(model.StatusWarn) == 0 {
 		s.report.Add("Gateway Traffic Path", "matched backends", model.StatusPass, fmt.Sprintf("%d matching backend path(s) found for %s, and no obvious backend reference or endpoint problems were detected.", len(matches), intentText))
 	}
+}
+
+func (s *gatewayScanner) addGatewayTrafficDataplaneContext(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, matches []gatewayPathMatch, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+	gatewayIndex := gatewayIndex(gateways)
+	seen := map[string]bool{}
+	for _, match := range matches {
+		key := match.GatewayNamespace + "/" + match.GatewayName
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		gateway, ok := gatewayIndex[key]
+		if !ok {
+			continue
+		}
+		services, err := gatewayImplementationServices(ctx, client, gateway)
+		if err != nil {
+			s.report.Add("Gateway Dataplane Layer", key+" services", model.StatusWarn, fmt.Sprintf("Could not list implementation Services for Gateway %s: %v", key, err))
+			continue
+		}
+		if len(services) == 0 {
+			s.report.Add("Gateway Dataplane Layer", key+" services", model.StatusInfo, fmt.Sprintf("No implementation Service with label gateway.networking.k8s.io/gateway-name=%s was found for Gateway %s.", gateway.GetName(), key))
+			continue
+		}
+		for _, service := range services {
+			serviceName := service.Namespace + "/" + service.Name
+			ready, err := cachedReadyEndpointCount(ctx, client, service.Namespace, service.Name, endpointReadyCache, endpointErrCache)
+			if err != nil {
+				s.report.Add("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusWarn, fmt.Sprintf("Could not read EndpointSlices for Gateway implementation Service %s: %v", serviceName, err))
+				continue
+			}
+			if ready == 0 {
+				message := fmt.Sprintf("Gateway implementation Service %s has no ready EndpointSlice addresses.", serviceName)
+				s.report.Add("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusFail, message)
+				if !hasGatewayTrafficStaticDiagnosis(s.report) {
+					s.report.Diagnose(fmt.Sprintf("Gateway implementation Service %s has no ready endpoints, so Gateway traffic has no ready dataplane pod.", serviceName))
+				}
+				continue
+			}
+			s.report.Add("Gateway Dataplane Layer", serviceName+" endpoints", model.StatusPass, fmt.Sprintf("Gateway implementation Service %s has %d ready endpoint address(es).", serviceName, ready))
+		}
+	}
+}
+
+func (s *gatewayScanner) runGatewayHTTPProbes(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, matches []gatewayPathMatch, intent gatewayTrafficIntent) {
+	gatewayIndex := gatewayIndex(gateways)
+	seen := map[string]bool{}
+	debugTargets := map[string]*ExecTarget{}
+	for _, match := range matches {
+		gateway, ok := gatewayIndex[match.GatewayNamespace+"/"+match.GatewayName]
+		if !ok {
+			continue
+		}
+		addresses := gatewayStatusAddressValues(gateway)
+		if len(addresses) == 0 {
+			s.report.Add("Gateway Runtime Probe", match.GatewayNamespace+"/"+match.GatewayName, model.StatusWarn, fmt.Sprintf("Skipped live probe because Gateway %s/%s has no status.addresses entries.", match.GatewayNamespace, match.GatewayName))
+			continue
+		}
+		port := match.ListenerPort
+		if port == 0 {
+			port = intent.Port
+		}
+		if port == 0 {
+			s.report.Add("Gateway Runtime Probe", match.GatewayNamespace+"/"+match.GatewayName, model.StatusWarn, fmt.Sprintf("Skipped live probe because Gateway listener %s/%s/%s has no port.", match.GatewayNamespace, match.GatewayName, match.ListenerName))
+			continue
+		}
+		scheme := intent.Scheme
+		if scheme == "" {
+			scheme = gatewaySchemeForListenerProtocol(match.ListenerProtocol)
+		}
+		if scheme == "" {
+			scheme = "http"
+		}
+		implementationServices, serviceErr := gatewayImplementationServices(ctx, client, gateway)
+		if serviceErr != nil {
+			s.report.Add("Gateway Runtime Probe", match.GatewayNamespace+"/"+match.GatewayName+" in-cluster", model.StatusWarn, fmt.Sprintf("Skipped in-cluster probe because implementation Services for Gateway %s/%s could not be listed: %v", match.GatewayNamespace, match.GatewayName, serviceErr))
+		}
+		externalPass := false
+		externalFailureDiagnosis := ""
+		for _, address := range addresses {
+			key := fmt.Sprintf("%s/%s/%s/%s/%d/%s", match.GatewayNamespace, match.GatewayName, match.ListenerName, address, port, scheme)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			rawURL := gatewayProbeURL(scheme, intent.Host, port, intent.Path, intent.Query)
+			result := testGatewayLocalHTTP(rawURL, address, port, intent.Host, intent.Method, s.opts.Timeout, intent.Headers)
+			check := fmt.Sprintf("%s/%s/%s via %s:%d", match.GatewayNamespace, match.GatewayName, match.ListenerName, address, port)
+			if result.OK {
+				externalPass = true
+				s.report.Add("Gateway Runtime Probe", check, model.StatusPass, fmt.Sprintf("Gateway address %s:%d answered %s for host %q. HTTP status: %s", address, port, rawURL, intent.Host, result.Status))
+				continue
+			}
+			s.report.Add("Gateway Runtime Probe", check, model.StatusFail, fmt.Sprintf("Gateway address %s:%d did not complete %s for host %q: %s", address, port, rawURL, intent.Host, result.Error))
+			if externalFailureDiagnosis == "" {
+				externalFailureDiagnosis = fmt.Sprintf("advertised Gateway address %s:%d did not complete %s for host %q. Error: %s", address, port, rawURL, intent.Host, compactCommandOutput(result.Error))
+			}
+		}
+		if serviceErr != nil {
+			if externalFailureDiagnosis != "" && !externalPass && !hasGatewayTrafficStaticDiagnosis(s.report) {
+				s.report.Diagnose(externalFailureDiagnosis)
+			}
+			continue
+		}
+		service, servicePort, ok := gatewayImplementationServiceForPort(implementationServices, port)
+		if !ok {
+			s.report.Add("Gateway Runtime Probe", match.GatewayNamespace+"/"+match.GatewayName+" in-cluster", model.StatusWarn, fmt.Sprintf("Skipped in-cluster probe because no implementation Service for Gateway %s/%s exposes listener port %d.", match.GatewayNamespace, match.GatewayName, port))
+			if externalFailureDiagnosis != "" && !externalPass && !hasGatewayTrafficStaticDiagnosis(s.report) {
+				s.report.Diagnose(externalFailureDiagnosis)
+			}
+			continue
+		}
+		key := fmt.Sprintf("%s/%s/%s/%s/%d/%s/in-cluster", match.GatewayNamespace, match.GatewayName, match.ListenerName, service.Namespace+"/"+service.Name, servicePort, scheme)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		target, ok := debugTargets[service.Namespace]
+		if !ok {
+			pod, err := ensureGatewayDebugPod(ctx, client, service.Namespace, s.opts.DebugPodName, s.opts.DebugImage, s.opts.DebugPullPolicy, maxDuration(s.opts.Timeout+30*time.Second, 60*time.Second))
+			if err != nil {
+				s.report.Add("Gateway Runtime Probe", service.Namespace+"/"+s.opts.DebugPodName, model.StatusWarn, fmt.Sprintf("Skipped in-cluster probe because debug pod %q in namespace %q was not ready: %v", s.opts.DebugPodName, service.Namespace, err))
+				if externalFailureDiagnosis != "" && !externalPass && !hasGatewayTrafficStaticDiagnosis(s.report) {
+					s.report.Diagnose(externalFailureDiagnosis)
+				}
+				continue
+			}
+			target = &ExecTarget{Client: client, Pod: *pod, Kind: "gateway debug pod"}
+			debugTargets[service.Namespace] = target
+			s.report.Add("Gateway Runtime Probe", service.Namespace+"/"+s.opts.DebugPodName, model.StatusPass, fmt.Sprintf("Gateway debug pod %q is Ready in namespace %q.", pod.Name, service.Namespace))
+		}
+		rawURL := gatewayImplementationServiceProbeURL(scheme, service, servicePort, intent.Path, intent.Query)
+		headers := map[string]string{}
+		for key, value := range intent.Headers {
+			headers[key] = value
+		}
+		if intent.Host != "" {
+			headers["Host"] = intent.Host
+		}
+		result := curlURL(ctx, *target, rawURL, s.opts.Timeout, headers)
+		check := fmt.Sprintf("%s/%s/%s via Service %s/%s:%d", match.GatewayNamespace, match.GatewayName, match.ListenerName, service.Namespace, service.Name, servicePort)
+		if result.OK {
+			s.report.Add("Gateway Runtime Probe", check, model.StatusPass, fmt.Sprintf("Gateway implementation Service %s/%s answered %s for host %q from inside the cluster. HTTP status: %s", service.Namespace, service.Name, rawURL, intent.Host, result.StatusCode))
+			if externalFailureDiagnosis != "" && !externalPass && !hasGatewayTrafficStaticDiagnosis(s.report) {
+				s.report.Diagnose(fmt.Sprintf("Gateway implementation Service %s/%s works from inside the cluster, but the workstation/client path to the %s", service.Namespace, service.Name, externalFailureDiagnosis))
+			}
+			continue
+		}
+		classification := classifyRuntimeHTTPFailure(result)
+		s.report.Add("Gateway Runtime Probe", check, model.StatusFail, runtimeProbeFailureMessage(*target, rawURL, result, classification))
+		if !hasGatewayTrafficStaticDiagnosis(s.report) && !externalPass {
+			s.report.Diagnose(fmt.Sprintf("Gateway implementation Service %s/%s failed from inside the cluster for host %q. Error: %s", service.Namespace, service.Name, intent.Host, compactCommandOutput(result.Error)))
+		}
+	}
+}
+
+func ensureGatewayDebugPod(ctx context.Context, client *kube.Client, namespace, name, image, imagePullPolicy string, timeout time.Duration) (*corev1.Pod, error) {
+	existing, err := client.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil && existing.DeletionTimestamp == nil && existing.Status.Phase == corev1.PodRunning && podReady(*existing) {
+		return existing, nil
+	}
+	if err == nil && existing.DeletionTimestamp != nil {
+		deadline := time.Now().Add(maxDuration(timeout, 30*time.Second))
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
+			current, getErr := client.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+			if apierrors.IsNotFound(getErr) {
+				break
+			}
+			if getErr != nil {
+				return nil, getErr
+			}
+			if current.DeletionTimestamp == nil && current.Status.Phase == corev1.PodRunning && podReady(*current) {
+				return current, nil
+			}
+		}
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	return client.EnsureDebugPod(ctx, namespace, name, image, imagePullPolicy, timeout)
+}
+
+func gatewayStatusAddressValues(gateway unstructured.Unstructured) []string {
+	var out []string
+	for _, raw := range sliceField(gateway.Object, "status", "addresses") {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if value := stringField(item, "value"); value != "" {
+			out = append(out, value)
+		}
+	}
+	return uniqueStrings(out)
+}
+
+func gatewayImplementationServices(ctx context.Context, client *kube.Client, gateway unstructured.Unstructured) ([]corev1.Service, error) {
+	selector := "gateway.networking.k8s.io/gateway-name=" + gateway.GetName()
+	list, err := client.Core.CoreV1().Services(gateway.GetNamespace()).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	out := append([]corev1.Service(nil), list.Items...)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Namespace+"/"+out[i].Name < out[j].Namespace+"/"+out[j].Name
+	})
+	return out, nil
+}
+
+func gatewayImplementationServiceForPort(services []corev1.Service, listenerPort int32) (corev1.Service, int32, bool) {
+	for _, service := range services {
+		for _, port := range service.Spec.Ports {
+			if port.Port == listenerPort {
+				return service, port.Port, true
+			}
+		}
+	}
+	if len(services) == 1 && len(services[0].Spec.Ports) == 1 {
+		return services[0], services[0].Spec.Ports[0].Port, true
+	}
+	return corev1.Service{}, 0, false
+}
+
+func gatewaySchemeForListenerProtocol(protocol string) string {
+	switch strings.ToUpper(strings.TrimSpace(protocol)) {
+	case "HTTPS", "TLS":
+		return "https"
+	default:
+		return "http"
+	}
+}
+
+func gatewayProbeURL(scheme, host string, port int32, path string, query url.Values) string {
+	if scheme == "" {
+		scheme = "http"
+	}
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(host, strconv.Itoa(int(port))),
+		Path:   path,
+	}
+	if len(query) > 0 {
+		u.RawQuery = query.Encode()
+	}
+	return u.String()
+}
+
+func gatewayImplementationServiceProbeURL(scheme string, service corev1.Service, port int32, path string, query url.Values) string {
+	if scheme == "" {
+		scheme = "http"
+	}
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(service.Name+"."+service.Namespace+".svc.cluster.local", strconv.Itoa(int(port))),
+		Path:   path,
+	}
+	if len(query) > 0 {
+		u.RawQuery = query.Encode()
+	}
+	return u.String()
+}
+
+func testGatewayLocalHTTP(rawURL, dialAddress string, dialPort int32, hostHeader string, method string, timeout time.Duration, headers map[string]string) localHTTPResult {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return localHTTPResult{Error: "invalid URL"}
+	}
+	dialTarget := net.JoinHostPort(dialAddress, strconv.Itoa(int(dialPort)))
+	dialer := &net.Dialer{Timeout: timeout}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, dialTarget)
+		},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         hostHeader,
+		},
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequest(method, rawURL, nil)
+	if err != nil {
+		return localHTTPResult{Error: err.Error()}
+	}
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return localHTTPResult{Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	status := strconv.Itoa(resp.StatusCode)
+	if resp.StatusCode < 500 {
+		return localHTTPResult{OK: true, Status: status}
+	}
+	return localHTTPResult{Status: status, Error: resp.Status}
+}
+
+func hasGatewayTrafficStaticDiagnosis(report *model.Report) bool {
+	return len(report.Diagnoses) > 0
 }
 
 func (s *gatewayScanner) addGatewaySelectedRuleFilterDetails(ctx context.Context, client *kube.Client, routeIndex map[string]unstructured.Unstructured, selectedRules []gatewayRuleMatch, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error, intent gatewayTrafficIntent) {
@@ -1791,13 +2644,17 @@ type gatewayObjectRef struct {
 }
 
 type gatewayTrafficIntent struct {
-	Scheme  string
-	Host    string
-	Port    int32
-	Path    string
-	Method  string
-	Headers map[string]string
-	Query   map[string][]string
+	Scheme        string
+	Host          string
+	Port          int32
+	Protocol      string
+	RouteFamilies []string
+	Path          string
+	Method        string
+	Headers       map[string]string
+	Query         map[string][]string
+	GRPCService   string
+	GRPCMethod    string
 }
 
 type gatewayPathMatch struct {
@@ -2773,6 +3630,18 @@ func serviceHasGatewayPort(service *corev1.Service, port int32) bool {
 	return false
 }
 
+func serviceHasPortName(service *corev1.Service, name string) bool {
+	if service == nil || name == "" {
+		return false
+	}
+	for _, servicePort := range service.Spec.Ports {
+		if servicePort.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func stringField(object map[string]interface{}, fields ...string) string {
 	value, _, _ := unstructured.NestedString(object, fields...)
 	return value
@@ -2814,6 +3683,14 @@ func int64FieldDefault(object map[string]interface{}, field string, fallback int
 
 func sliceField(object map[string]interface{}, fields ...string) []interface{} {
 	value, _, _ := unstructured.NestedSlice(object, fields...)
+	return value
+}
+
+func mapField(object map[string]interface{}, fields ...string) map[string]interface{} {
+	value, ok, _ := unstructured.NestedMap(object, fields...)
+	if !ok {
+		return map[string]interface{}{}
+	}
 	return value
 }
 

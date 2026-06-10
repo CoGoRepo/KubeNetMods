@@ -351,6 +351,7 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var quiet bool
 	var noTerminal bool
 	var timeoutSeconds int
+	var port int
 	var headers keyValueFlag
 
 	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
@@ -364,10 +365,18 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.StringVar(&opts.URL, "url", "", "request URL to trace through Gateway API")
 	fs.StringVar(&opts.Host, "host", "", "request host to trace through Gateway API")
 	fs.StringVar(&opts.Scheme, "scheme", "", "request scheme for traffic intent")
+	fs.IntVar(&port, "port", 0, "request port for traffic intent")
+	fs.StringVar(&opts.Protocol, "protocol", "", "traffic protocol override: auto, http, https, grpc, or tls")
 	fs.StringVar(&opts.Path, "path", "", "request path for traffic intent; defaults to / when --host is used")
 	fs.StringVar(&opts.Method, "method", "", "request method for traffic intent")
 	fs.Var(&headers, "header", "request header as Name=Value for traffic intent; repeatable")
+	fs.StringVar(&opts.GRPCService, "grpc-service", "", "gRPC service name for traffic intent")
+	fs.StringVar(&opts.GRPCMethod, "grpc-method", "", "gRPC method name for traffic intent")
 	fs.StringVar(&opts.ExpectService, "expect-service", "", "expected backend Service for traffic intent as name or namespace/name")
+	fs.BoolVar(&opts.Probe, "probe", false, "run a live HTTP/HTTPS probe against the matched Gateway address")
+	fs.StringVar(&opts.DebugImage, "debug-image", "nicolaka/netshoot:latest", "debug pod image for in-cluster Gateway probes")
+	fs.StringVar(&opts.DebugPullPolicy, "debug-pull-policy", "IfNotPresent", "debug pod image pull policy")
+	fs.StringVar(&opts.DebugPodName, "debug-pod", "kubenetmods-gateway-debug", "debug pod name for in-cluster Gateway probes")
 	fs.IntVar(&opts.Limit, "limit", 50, "maximum problem details to print in scan mode")
 	fs.BoolVar(&opts.Wide, "wide", false, "include healthy scan summaries and extra context")
 	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
@@ -386,13 +395,29 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 10
 	}
+	if port < 0 || port > 65535 {
+		fmt.Fprintln(stderr, "--port must be between 1 and 65535")
+		return 2
+	}
+	opts.Port = int32(port)
 	opts.HTTPHeaders = headers
 	opts.Timeout = time.Duration(timeoutSeconds) * time.Second
-	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout+30*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, gatewayRunTimeout(opts.Timeout))
 	defer cancel()
 
 	rep, err := check.RunGateway(runCtx, opts)
 	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
+}
+
+func gatewayRunTimeout(perProbe time.Duration) time.Duration {
+	if perProbe <= 0 {
+		perProbe = 10 * time.Second
+	}
+	total := perProbe*4 + 90*time.Second
+	if total < 2*time.Minute {
+		return 2 * time.Minute
+	}
+	return total
 }
 
 func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -770,6 +795,8 @@ func gatewayUsage(w io.Writer) {
 			"knm check gateway --gateway infra/public",
 			"knm check gateway --route apps/api-route --wide",
 			"knm check gateway --host payments.example.com --path /api",
+			"knm check gateway --host invoices.example.com --port 443",
+			"knm check gateway --host payments.example.com --grpc-service checkout.Payment --grpc-method Create",
 			"knm check gateway --url https://payments.example.com/api --method POST",
 			"knm check gateway --url https://payments.example.com/api --expect-service apps/payments-api",
 		},
@@ -778,10 +805,16 @@ func gatewayUsage(w io.Writer) {
 			{"--url", "URL", "traffic intent URL; owns scheme, host, port, path, and query"},
 			{"--host", "host", "traffic intent host when --url is not used"},
 			{"--scheme", "http|https", "traffic intent scheme when --url is not used"},
+			{"--port", "port", "traffic intent port when --url is not used"},
+			{"--protocol", "auto|http|https|grpc|tls", "optional traffic protocol override; defaults to inference"},
 			{"--path", "path", "traffic intent path; defaults to / with --host"},
 			{"--method", "method", "traffic intent HTTP method"},
 			{"--header", "Name=Value", "traffic intent header; repeatable"},
+			{"--grpc-service", "name", "gRPC service name for traffic intent"},
+			{"--grpc-method", "name", "gRPC method name for traffic intent"},
 			{"--expect-service", "name|namespace/name", "traffic intent should select this backend Service"},
+			{"--probe", "", "run live HTTP/HTTPS probes against the matched Gateway address and implementation Service"},
+			{"--debug-image", "image", "debug pod image for in-cluster Gateway probes"},
 			{"-n, --namespace", "name", "scope filter: scan routes/services in namespace; all namespaces when omitted"},
 			{"--gateway", "name|namespace/name", "scope filter: only consider this Gateway"},
 			{"--route", "name|namespace/name", "scope filter: only consider this HTTPRoute"},
