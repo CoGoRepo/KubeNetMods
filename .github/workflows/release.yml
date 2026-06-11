@@ -79,28 +79,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > release-notes.md <<'EOF'
-          ## What's Changed
-
-          This release adds Istio-aware service-path diagnostics while keeping `knm check service` focused on the tested source-to-Service path.
-
-          - Added Istio client wiring and optional mesh diagnostics when Istio CRDs are installed and readable.
-          - Added diagnosis for Istio AuthorizationPolicy DENY matches and ALLOW default-deny behavior, including matching rule numbers when KNM can prove them.
-          - Added RequestAuthentication/JWT hints and CUSTOM/external authorization visibility without treating external providers as fully modeled by KNM.
-          - Added VirtualService and DestinationRule analysis for bad subsets, source-namespace route config, weighted routes, direct responses, redirects, fault injection, and no-healthy-upstream 503s.
-          - Added mesh visibility guardrails for VirtualService gateways/exportTo, DestinationRule exportTo, and dry-run AuthorizationPolicy objects.
-          - Added PeerAuthentication and DestinationRule TLS checks for STRICT mTLS, unmeshed sources, and client TLS mode mismatches.
-          - Added `--path` and repeatable `--header Name=Value` runtime probe shaping for HTTP paths that depend on route/header/query matches.
-          - Improved Windows terminal ANSI handling.
-          - Added reusable Istio/Cilium lab manifests and live-test helpers.
-          - Updated README capabilities, Istio usage, permissions, and release behavior.
-
-          ## Verification
-
-          - `go test ./...`
-          - `go install ./cmd/knm`
-          - Live smoke checks against Cilium + Istio service-path scenarios including 403 RBAC denial, ALLOW default deny, JWT hints, 503 bad subset, weighted routes, mTLS, and DestinationRule TLS mismatch.
-          EOF
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents:body)' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > release-notes.md
+          fi
+          if [ ! -s release-notes.md ]; then
+            {
+              echo "## What's Changed"
+              echo
+              echo "See the commits included in ${GITHUB_REF_NAME}."
+            } > release-notes.md
+          fi
 
       - name: Publish GitHub release
         env:
