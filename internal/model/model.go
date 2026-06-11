@@ -34,10 +34,11 @@ type Target struct {
 }
 
 type Result struct {
-	Layer   string `json:"layer"`
-	Check   string `json:"check"`
-	Status  Status `json:"status"`
-	Message string `json:"message"`
+	Layer    string `json:"layer"`
+	Check    string `json:"check"`
+	Status   Status `json:"status"`
+	Category string `json:"category,omitempty"`
+	Message  string `json:"message"`
 }
 
 type Diagnosis struct {
@@ -65,11 +66,16 @@ func NewReport(command string, target Target) *Report {
 }
 
 func (r *Report) Add(layer, check string, status Status, message string) {
+	r.AddCategorized(layer, check, status, "", message)
+}
+
+func (r *Report) AddCategorized(layer, check string, status Status, category string, message string) {
 	r.Results = append(r.Results, Result{
-		Layer:   layer,
-		Check:   check,
-		Status:  status,
-		Message: message,
+		Layer:    layer,
+		Check:    check,
+		Status:   status,
+		Category: category,
+		Message:  message,
 	})
 }
 

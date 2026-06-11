@@ -189,7 +189,7 @@ func analyzeNativeEgress(report *model.Report, source corev1.Pod, targetNamespac
 		report.Add("NetworkPolicy Path Analysis", "source egress to target", model.StatusPass, fmt.Sprintf("Source egress NetworkPolicy appears to allow this target path. Matching policy/rule found in: %s.", strings.Join(uniqueStrings(reasons), ", ")))
 		return
 	}
-	report.Add("NetworkPolicy Path Analysis", "source egress to target", model.StatusWarn, fmt.Sprintf("Source pod %q is egress-isolated by NetworkPolicy (%s), and no rule obviously allows target namespace %q on TCP port(s) %s.", source.Name, strings.Join(names, ", "), targetNamespace.Name, formatPorts(ports)))
+	report.AddCategorized("NetworkPolicy Path Analysis", "source egress to target", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Source pod %q is egress-isolated by NetworkPolicy (%s), and no rule obviously allows target namespace %q on TCP port(s) %s.", source.Name, strings.Join(names, ", "), targetNamespace.Name, formatPorts(ports)))
 	report.Diagnose(fmt.Sprintf("Primary issue: native egress NetworkPolicy default-deny blocks source pod %q from Service %q on TCP port(s) %s. Selected policy/policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), formatPorts(ports), strings.Join(names, ", ")))
 }
 
@@ -223,7 +223,7 @@ func analyzeNativeIngress(report *model.Report, source corev1.Pod, sourceNamespa
 		report.Add("NetworkPolicy Path Analysis", "target ingress from source", model.StatusPass, fmt.Sprintf("Target ingress NetworkPolicy appears to allow source pod %q. Matching policy/rule found in: %s.", source.Name, strings.Join(uniqueStrings(reasons), ", ")))
 		return
 	}
-	report.Add("NetworkPolicy Path Analysis", "target ingress from source", model.StatusWarn, fmt.Sprintf("Target pods are ingress-isolated by NetworkPolicy (%s), and no rule obviously allows source namespace %q on TCP port(s) %s.", strings.Join(names, ", "), sourceNamespace.Name, formatPorts(ports)))
+	report.AddCategorized("NetworkPolicy Path Analysis", "target ingress from source", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Target pods are ingress-isolated by NetworkPolicy (%s), and no rule obviously allows source namespace %q on TCP port(s) %s.", strings.Join(names, ", "), sourceNamespace.Name, formatPorts(ports)))
 	report.Diagnose(fmt.Sprintf("Primary issue: native ingress NetworkPolicy default-deny blocks source pod %q from Service %q on TCP port(s) %s. Selected policy/policies: %s.", source.Namespace+"/"+source.Name, serviceName(service), formatPorts(ports), strings.Join(names, ", ")))
 }
 

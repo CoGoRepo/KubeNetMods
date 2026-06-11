@@ -38,8 +38,6 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runService(ctx, args[1:], stdout, stderr)
 	case "egress":
 		return runEgress(ctx, args[1:], stdout, stderr)
-	case "ingress":
-		return runIngress(ctx, args[1:], stdout, stderr)
 	case "gateway":
 		return runGateway(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -70,7 +68,7 @@ func runShow(ctx context.Context, args []string, stdout io.Writer, stderr io.Wri
 func runCheck(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "missing check type")
-		fmt.Fprintln(stderr, "usage: knm check <service|ingress|egress|gateway> [options]")
+		fmt.Fprintln(stderr, "usage: knm check <service|egress|gateway> [options]")
 		return 2
 	}
 	switch args[0] {
@@ -78,8 +76,6 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 		return runService(ctx, args[1:], stdout, stderr)
 	case "egress":
 		return runEgress(ctx, args[1:], stdout, stderr)
-	case "ingress":
-		return runIngress(ctx, args[1:], stdout, stderr)
 	case "gateway":
 		return runGateway(ctx, args[1:], stdout, stderr)
 	default:
@@ -190,6 +186,8 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	var htmlPath string
 	var quiet bool
 	var noTerminal bool
+	var failOnWarn bool
+	var ignoreWarn warningCategoryFlag
 	var wide bool
 	var timeoutSeconds int
 
@@ -215,6 +213,8 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
 	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
 	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
+	fs.BoolVar(&failOnWarn, "fail-on-warn", false, "exit non-zero when the report contains WARN results")
+	fs.Var(&ignoreWarn, "ignore-warn", "warning categories to ignore for --fail-on-warn; repeatable or comma-separated")
 	fs.BoolVar(&wide, "wide", false, "print detailed blocker cards instead of compact table")
 
 	if err := fs.Parse(args); err != nil {
@@ -232,7 +232,7 @@ func runShowBlockers(ctx context.Context, args []string, stdout io.Writer, stder
 	defer cancel()
 
 	rep, err := check.RunBlockers(runCtx, opts)
-	return finishBlockersReport(rep, err, terminalMode(quiet, noTerminal), wide, jsonPath, htmlPath, stdout, stderr)
+	return finishBlockersReport(rep, err, terminalMode(quiet, noTerminal), wide, failOnWarn, ignoreWarn.set(), jsonPath, htmlPath, stdout, stderr)
 }
 
 func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -245,6 +245,8 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	var htmlPath string
 	var quiet bool
 	var noTerminal bool
+	var failOnWarn bool
+	var ignoreWarn warningCategoryFlag
 	var timeoutSeconds int
 	var urls multiFlag
 
@@ -267,6 +269,8 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
 	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
 	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
+	fs.BoolVar(&failOnWarn, "fail-on-warn", false, "exit non-zero when the report contains WARN results")
+	fs.Var(&ignoreWarn, "ignore-warn", "warning categories to ignore for --fail-on-warn; repeatable or comma-separated")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -283,61 +287,7 @@ func runEgress(ctx context.Context, args []string, stdout io.Writer, stderr io.W
 	defer cancel()
 
 	rep, err := check.RunEgress(runCtx, opts)
-	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
-}
-
-func runIngress(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
-	fs := flag.NewFlagSet("knm check ingress", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { ingressUsage(stderr) }
-
-	var opts check.IngressOptions
-	var jsonPath string
-	var htmlPath string
-	var quiet bool
-	var noTerminal bool
-	var timeoutSeconds int
-	var servicePort int
-	var ingressURLs multiFlag
-	var externalURLs multiFlag
-
-	fs.StringVar(&opts.Context, "context", "", "kubeconfig context")
-	fs.StringVar(&opts.Context, "cluster", "", "alias for --context")
-	fs.StringVar(&opts.Context, "c", "", "alias for --context")
-	fs.StringVar(&opts.Namespace, "namespace", "default", "target Service namespace")
-	fs.StringVar(&opts.Namespace, "n", "default", "alias for --namespace")
-	fs.StringVar(&opts.Service, "service", "nginx", "target Service name")
-	fs.StringVar(&opts.Service, "t", "nginx", "alias for --service")
-	fs.IntVar(&servicePort, "port", 0, "target Service port; defaults to first Service port")
-	fs.IntVar(&servicePort, "p", 0, "alias for --port")
-	fs.Var(&ingressURLs, "ingress-url", "explicit ingress URL to test; repeatable")
-	fs.Var(&externalURLs, "external-url", "explicit external URL to test; repeatable")
-	fs.BoolVar(&opts.TestLoadBalancer, "test-load-balancer", false, "inspect/test LoadBalancer external paths")
-	fs.IntVar(&timeoutSeconds, "timeout", 10, "timeout in seconds")
-	fs.StringVar(&jsonPath, "json", "", "write JSON report to path")
-	fs.StringVar(&htmlPath, "html", "", "write HTML report to path")
-	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
-	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
-	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
-
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return 0
-		}
-		return 2
-	}
-	opts.IngressURLs = ingressURLs
-	opts.ExternalURLs = externalURLs
-	opts.ServicePort = int32(servicePort)
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 10
-	}
-	opts.Timeout = time.Duration(timeoutSeconds) * time.Second
-	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout+30*time.Second)
-	defer cancel()
-
-	rep, err := check.RunIngress(runCtx, opts)
-	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), failOnWarn, ignoreWarn.set(), jsonPath, htmlPath, stdout, stderr)
 }
 
 func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -350,6 +300,8 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var htmlPath string
 	var quiet bool
 	var noTerminal bool
+	var failOnWarn bool
+	var ignoreWarn warningCategoryFlag
 	var timeoutSeconds int
 	var port int
 	var headers keyValueFlag
@@ -374,6 +326,7 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.StringVar(&opts.GRPCMethod, "grpc-method", "", "gRPC method name for traffic intent")
 	fs.StringVar(&opts.ExpectService, "expect-service", "", "expected backend Service for traffic intent as name or namespace/name")
 	fs.BoolVar(&opts.Probe, "probe", false, "run a live HTTP/HTTPS probe against the matched Gateway address")
+	fs.StringVar(&opts.ProbeAddress, "probe-address", "", "override workstation/client probe dial address as host or host:port")
 	fs.StringVar(&opts.DebugImage, "debug-image", "nicolaka/netshoot:latest", "debug pod image for in-cluster Gateway probes")
 	fs.StringVar(&opts.DebugPullPolicy, "debug-pull-policy", "IfNotPresent", "debug pod image pull policy")
 	fs.StringVar(&opts.DebugPodName, "debug-pod", "kubenetmods-gateway-debug", "debug pod name for in-cluster Gateway probes")
@@ -385,6 +338,8 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
 	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
 	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
+	fs.BoolVar(&failOnWarn, "fail-on-warn", false, "exit non-zero when the report contains WARN results")
+	fs.Var(&ignoreWarn, "ignore-warn", "warning categories to ignore for --fail-on-warn; repeatable or comma-separated")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -406,7 +361,7 @@ func runGateway(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	defer cancel()
 
 	rep, err := check.RunGateway(runCtx, opts)
-	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), failOnWarn, ignoreWarn.set(), jsonPath, htmlPath, stdout, stderr)
 }
 
 func gatewayRunTimeout(perProbe time.Duration) time.Duration {
@@ -430,6 +385,8 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	var htmlPath string
 	var quiet bool
 	var noTerminal bool
+	var failOnWarn bool
+	var ignoreWarn warningCategoryFlag
 	var timeoutSeconds int
 	var servicePort int
 	var headers keyValueFlag
@@ -470,6 +427,8 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	fs.BoolVar(&quiet, "quiet", false, "print only diagnosis to terminal")
 	fs.BoolVar(&noTerminal, "no-terminal", false, "do not print terminal output")
 	fs.BoolVar(&noTerminal, "no-term", false, "alias for --no-terminal")
+	fs.BoolVar(&failOnWarn, "fail-on-warn", false, "exit non-zero when the report contains WARN results")
+	fs.Var(&ignoreWarn, "ignore-warn", "warning categories to ignore for --fail-on-warn; repeatable or comma-separated")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -494,7 +453,7 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	defer cancel()
 
 	rep, err := check.RunService(runCtx, opts)
-	return finishReport(rep, err, terminalMode(quiet, noTerminal), jsonPath, htmlPath, stdout, stderr)
+	return finishReport(rep, err, terminalMode(quiet, noTerminal), failOnWarn, ignoreWarn.set(), jsonPath, htmlPath, stdout, stderr)
 }
 
 func serviceRunTimeout(perCheck time.Duration) time.Duration {
@@ -552,7 +511,7 @@ func terminalMode(quiet bool, noTerminal bool) terminalOutputMode {
 	return terminalOutputFull
 }
 
-func finishReport(rep *model.Report, err error, mode terminalOutputMode, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
+func finishReport(rep *model.Report, err error, mode terminalOutputMode, failOnWarn bool, ignoredWarns map[string]bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -588,10 +547,13 @@ func finishReport(rep *model.Report, err error, mode terminalOutputMode, jsonPat
 	if rep.CountByStatus("FAIL") > 0 {
 		return 1
 	}
+	if failOnWarn && reportHasUnignoredWarn(rep, ignoredWarns) {
+		return 1
+	}
 	return 0
 }
 
-func finishBlockersReport(rep *model.Report, err error, mode terminalOutputMode, wide bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
+func finishBlockersReport(rep *model.Report, err error, mode terminalOutputMode, wide bool, failOnWarn bool, ignoredWarns map[string]bool, jsonPath string, htmlPath string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -627,7 +589,26 @@ func finishBlockersReport(rep *model.Report, err error, mode terminalOutputMode,
 	if rep.CountByStatus("FAIL") > 0 {
 		return 1
 	}
+	if failOnWarn && reportHasUnignoredWarn(rep, ignoredWarns) {
+		return 1
+	}
 	return 0
+}
+
+func reportHasUnignoredWarn(rep *model.Report, ignoredWarns map[string]bool) bool {
+	for _, result := range rep.Results {
+		if result.Status != model.StatusWarn {
+			continue
+		}
+		category := strings.TrimSpace(result.Category)
+		if category == "" {
+			category = warnCategoryUncategorized
+		}
+		if !ignoredWarns[category] {
+			return true
+		}
+	}
+	return false
 }
 
 type helpFlag struct {
@@ -729,6 +710,8 @@ func serviceUsage(w io.Writer) {
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
 			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--fail-on-warn", "", "exit non-zero when WARN results are present"},
+			{"--ignore-warn", "category[,category]", "ignore warning categories for --fail-on-warn; accepts 1-7 aliases"},
 			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
@@ -755,31 +738,8 @@ func egressUsage(w io.Writer) {
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
 			{"--quiet", "", "print only diagnosis to terminal"},
-			{"--no-terminal, --no-term", "", "do not print terminal output"},
-		})
-}
-
-func ingressUsage(w io.Writer) {
-	printCommandHelp(w,
-		"KubeNetMods check ingress",
-		"knm check ingress [options]",
-		[]string{"knm ingress [options]"},
-		[]string{
-			"knm ingress -c prod -n apps -t api -p 443 --ingress-url https://api.example.com",
-			"knm check ingress --namespace apps --service api --test-load-balancer",
-		},
-		[]helpFlag{
-			{"-c, --context, --cluster", "name", "kubeconfig context / cluster name"},
-			{"-n, --namespace", "name", "target Service namespace"},
-			{"-t, --service", "name", "target Service name"},
-			{"-p, --port", "port", "target Service port; defaults to first Service port"},
-			{"--ingress-url", "url", "explicit ingress URL to test; repeatable"},
-			{"--external-url", "url", "explicit external URL to test; repeatable"},
-			{"--test-load-balancer", "", "inspect/test LoadBalancer external paths"},
-			{"--timeout", "seconds", "timeout in seconds"},
-			{"--html", "path", "write HTML report"},
-			{"--json", "path", "write JSON report"},
-			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--fail-on-warn", "", "exit non-zero when WARN results are present"},
+			{"--ignore-warn", "category[,category]", "ignore warning categories for --fail-on-warn; accepts 1-7 aliases"},
 			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
@@ -814,6 +774,7 @@ func gatewayUsage(w io.Writer) {
 			{"--grpc-method", "name", "gRPC method name for traffic intent"},
 			{"--expect-service", "name|namespace/name", "traffic intent should select this backend Service"},
 			{"--probe", "", "run live HTTP/HTTPS probes against the matched Gateway address and implementation Service"},
+			{"--probe-address", "host[:port]", "override workstation/client probe dial address; useful for local kind/cloud-provider-kind proxies"},
 			{"--debug-image", "image", "debug pod image for in-cluster Gateway probes"},
 			{"-n, --namespace", "name", "scope filter: scan routes/services in namespace; all namespaces when omitted"},
 			{"--gateway", "name|namespace/name", "scope filter: only consider this Gateway"},
@@ -825,6 +786,8 @@ func gatewayUsage(w io.Writer) {
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
 			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--fail-on-warn", "", "exit non-zero when WARN results are present"},
+			{"--ignore-warn", "category[,category]", "ignore warning categories for --fail-on-warn; accepts 1-7 aliases"},
 			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
@@ -856,6 +819,8 @@ func blockersUsage(w io.Writer) {
 			{"--html", "path", "write HTML report"},
 			{"--json", "path", "write JSON report"},
 			{"--quiet", "", "print only diagnosis to terminal"},
+			{"--fail-on-warn", "", "exit non-zero when WARN results are present"},
+			{"--ignore-warn", "category[,category]", "ignore warning categories for --fail-on-warn; accepts 1-7 aliases"},
 			{"--no-terminal, --no-term", "", "do not print terminal output"},
 		})
 }
@@ -869,6 +834,63 @@ func (m *multiFlag) String() string {
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
+}
+
+const (
+	warnCategoryRuntimeUnavailable = "runtime-unavailable"
+	warnCategoryAPIInspection      = "api-inspection"
+	warnCategoryPolicyAmbiguous    = "policy-ambiguous"
+	warnCategoryConditionalRouting = "conditional-routing"
+	warnCategoryUnsupportedRef     = "unsupported-ref"
+	warnCategoryOutputLimited      = "output-limited"
+	warnCategoryUncategorized      = "uncategorized"
+)
+
+var warningCategoryAliases = map[string]string{
+	"1": warnCategoryRuntimeUnavailable,
+	"2": warnCategoryAPIInspection,
+	"3": warnCategoryPolicyAmbiguous,
+	"4": warnCategoryConditionalRouting,
+	"5": warnCategoryUnsupportedRef,
+	"6": warnCategoryOutputLimited,
+	"7": warnCategoryUncategorized,
+
+	warnCategoryRuntimeUnavailable: warnCategoryRuntimeUnavailable,
+	warnCategoryAPIInspection:      warnCategoryAPIInspection,
+	warnCategoryPolicyAmbiguous:    warnCategoryPolicyAmbiguous,
+	warnCategoryConditionalRouting: warnCategoryConditionalRouting,
+	warnCategoryUnsupportedRef:     warnCategoryUnsupportedRef,
+	warnCategoryOutputLimited:      warnCategoryOutputLimited,
+	warnCategoryUncategorized:      warnCategoryUncategorized,
+}
+
+type warningCategoryFlag []string
+
+func (w *warningCategoryFlag) String() string {
+	return strings.Join([]string(*w), ",")
+}
+
+func (w *warningCategoryFlag) Set(value string) error {
+	for _, raw := range strings.Split(value, ",") {
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if key == "" {
+			continue
+		}
+		category, ok := warningCategoryAliases[key]
+		if !ok {
+			return fmt.Errorf("unknown warning category %q (valid: 1=%s, 2=%s, 3=%s, 4=%s, 5=%s, 6=%s, 7=%s)", raw, warnCategoryRuntimeUnavailable, warnCategoryAPIInspection, warnCategoryPolicyAmbiguous, warnCategoryConditionalRouting, warnCategoryUnsupportedRef, warnCategoryOutputLimited, warnCategoryUncategorized)
+		}
+		*w = append(*w, category)
+	}
+	return nil
+}
+
+func (w warningCategoryFlag) set() map[string]bool {
+	out := map[string]bool{}
+	for _, category := range w {
+		out[category] = true
+	}
+	return out
 }
 
 type keyValueFlag map[string]string
@@ -899,7 +921,6 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  knm discover <text> [options]")
 	fmt.Fprintln(w, "  knm check service [options]")
 	fmt.Fprintln(w, "  knm check egress [options]")
-	fmt.Fprintln(w, "  knm check ingress [options]")
 	fmt.Fprintln(w, "  knm check gateway [options]")
 	fmt.Fprintln(w, "  knm show blockers [options]")
 	fmt.Fprintln(w, "  knm service [options]")
@@ -909,7 +930,6 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  knm check service --namespace default --service nginx")
 	fmt.Fprintln(w, "  knm check service --namespace database --target postgres --source-namespace web --source frontend --port 5432 --html report.html")
 	fmt.Fprintln(w, "  knm check egress --source-namespace app --source-selector app=api --url https://example.com")
-	fmt.Fprintln(w, "  knm check ingress --namespace app --service api --ingress-url https://api.example.com")
 	fmt.Fprintln(w, "  knm check gateway")
 	fmt.Fprintln(w, "  knm show blockers --namespace app --pod api-1234 --direction egress --port 5432")
 }

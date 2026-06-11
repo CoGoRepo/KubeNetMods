@@ -12,6 +12,9 @@ import (
 
 	"github.com/CoGoRepo/KubeNetMods/internal/kube"
 	"github.com/CoGoRepo/KubeNetMods/internal/model"
+	networkingapi "istio.io/api/networking/v1alpha3"
+	networkingv1 "istio.io/client-go/pkg/apis/networking/v1"
+	istiofake "istio.io/client-go/pkg/clientset/versioned/fake"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -214,6 +217,26 @@ func TestGatewayScanKeepsRouteStatusDiagnosisWhenNoConcreteBackendCauseExists(t 
 	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/catalog has unresolved references")
 }
 
+func TestGatewayScanSuppressesRouteStatusWhenUnsupportedBackendKindIsConcrete(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "secure", "istio", true, "True", "True", testGatewayListener("tls", nil)),
+			testGatewayRouteKind("TLSRoute", "app", "bucket", "edge", "secure", []map[string]interface{}{
+				{"group": "storage.example.io", "kind": "Bucket", "name": "profile-archive"},
+			}, "True", "False"),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "TLSRoute app/bucket rule 1 routes to backend kind storage.example.io/Bucket app/profile-archive")
+	assertGatewayDiagnosisNotContains(t, report, "TLSRoute app/bucket has unresolved references")
+}
+
 func TestGatewayScanKeepsListenerStatusDiagnosisWhenNoConcreteTLSCauseExists(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
@@ -336,6 +359,104 @@ func TestGatewayScanDiagnosesBackendTLSPolicyProblems(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "BackendTLSPolicy app/payments-tls targets Service app/payments-api sectionName \"https\", but that Service port name does not exist")
 	assertGatewayDiagnosisContains(t, report, "BackendTLSPolicy app/payments-tls CA ConfigMap app/payments-ca is missing key ca.crt")
 	assertGatewayDiagnosisNotContains(t, report, "BackendTLSPolicy app/payments-tls is not ResolvedRefs: InvalidCACertificateRef")
+}
+
+func TestGatewayPolicyTargetRefsAcceptsSingularAndPluralTargets(t *testing.T) {
+	policy := gatewayUnstructured("BackendTrafficPolicy", "app", "payments", map[string]interface{}{
+		"spec": map[string]interface{}{
+			"targetRef": map[string]interface{}{
+				"group":       "",
+				"kind":        "Service",
+				"name":        "payments-api",
+				"sectionName": "http",
+			},
+			"targetRefs": []interface{}{
+				map[string]interface{}{
+					"group": "",
+					"kind":  "Service",
+					"name":  "orders-api",
+				},
+			},
+		},
+	})
+
+	targetRefs := gatewayPolicyTargetRefs(policy)
+
+	if len(targetRefs) != 2 {
+		t.Fatalf("expected 2 target refs, got %d", len(targetRefs))
+	}
+	if got := stringField(targetRefs[0].ref, "name"); got != "payments-api" {
+		t.Fatalf("expected singular targetRef first, got %q", got)
+	}
+	if got := gatewayPolicyTargetRefText(targetRefs[1]); got != "targetRef 1" {
+		t.Fatalf("expected plural target ref label, got %q", got)
+	}
+}
+
+func TestGatewayScanDiagnosesEnvoyPolicyTargetProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testEnvoyPolicy("BackendTrafficPolicy", "edge", "edge-traffic", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "public", "sectionName": "missing"},
+			}, "True", "False", "Invalid"),
+			testEnvoyPolicy("ClientTrafficPolicy", "app", "client", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "orders"},
+			}, "False", "True", "InvalidTarget"),
+			testEnvoyPolicy("SecurityPolicy", "app", "security", []interface{}{
+				map[string]interface{}{"group": "", "kind": "Secret", "name": "creds"},
+			}, "True", "True", "Accepted"),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy edge/edge-traffic targets Gateway edge/public sectionName \"missing\", but that listener does not exist")
+	assertGatewayDiagnosisContains(t, report, "Envoy ClientTrafficPolicy app/client targets HTTPRoute app/orders, but that route was not found")
+	assertGatewayDiagnosisContains(t, report, "Envoy ClientTrafficPolicy app/client is not Accepted: InvalidTarget")
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security targets kind Secret app/creds; KNM does not evaluate that target type")
+}
+
+func TestGatewayScanDiagnosesEnvoyPolicyServiceTargetProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testEnvoyPolicy("BackendTrafficPolicy", "app", "traffic", []interface{}{
+				map[string]interface{}{"group": "", "kind": "Service", "name": "orders-api", "sectionName": "grpc"},
+				map[string]interface{}{"group": "", "kind": "Service", "name": "payments-api"},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "orders-api", 80),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets Service app/orders-api sectionName \"grpc\", but that Service port name does not exist")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets Service app/payments-api, but that Service is missing or unreadable")
+}
+
+func TestGatewayScanDiagnosesXBackendTrafficPolicyTargetProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testXBackendTrafficPolicy("app", "traffic", []interface{}{
+				map[string]interface{}{"group": "", "kind": "Service", "name": "payments-api"},
+			}, "True", "False", "BackendNotFound"),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "XBackendTrafficPolicy app/traffic targets Service app/payments-api, but that Service is missing or unreadable")
+	assertGatewayDiagnosisContains(t, report, "XBackendTrafficPolicy app/traffic is not ResolvedRefs: BackendNotFound")
 }
 
 func TestGatewayScanDiagnosesImplementationServicePortMismatch(t *testing.T) {
@@ -790,6 +911,161 @@ func TestGatewayTrafficIntentInfersTLSRouteFromHostPort(t *testing.T) {
 	}
 }
 
+func TestGatewayTrafficIntentTracesGRPCRouteBackendProblems(t *testing.T) {
+	listener := testGatewayListener("grpc", nil)
+	listener["hostname"] = "*.knm.local"
+	listener["protocol"] = "HTTP2"
+	listener["port"] = int64(50051)
+	route := testGatewayRouteKind("GRPCRoute", "app", "payments", "edge", "grpc", []map[string]interface{}{
+		testBackendRef("ledger-api", "", int64(50051)),
+	}, "True", "True")
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"payments.knm.local"}
+	rules := route.Object["spec"].(map[string]interface{})["rules"].([]interface{})
+	rules[0].(map[string]interface{})["matches"] = []interface{}{map[string]interface{}{
+		"method": map[string]interface{}{"service": "checkout.Payment", "method": "Create"},
+		"headers": []interface{}{map[string]interface{}{
+			"name":  "x-region",
+			"value": "us",
+		}},
+	}}
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "grpc", "istio", true, "True", "True", listener),
+			route,
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Protocol:      "grpc",
+		RouteFamilies: []string{"GRPCRoute"},
+		Host:          "payments.knm.local",
+		Port:          50051,
+		GRPCService:   "checkout.Payment",
+		GRPCMethod:    "Create",
+		Headers:       map[string]string{"x-region": "us"},
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "GRPCRoute app/payments rule 1 routes to Service app/ledger-api, but that Service is missing or unreadable")
+}
+
+func TestGatewayTrafficIntentExplainsGRPCRouteMethodMiss(t *testing.T) {
+	listener := testGatewayListener("grpc", nil)
+	listener["hostname"] = "*.knm.local"
+	listener["protocol"] = "HTTP2"
+	listener["port"] = int64(50051)
+	route := testGatewayRouteKind("GRPCRoute", "app", "payments", "edge", "grpc", []map[string]interface{}{
+		testBackendRef("ledger-api", "", int64(50051)),
+	}, "True", "True")
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"payments.knm.local"}
+	rules := route.Object["spec"].(map[string]interface{})["rules"].([]interface{})
+	rules[0].(map[string]interface{})["matches"] = []interface{}{map[string]interface{}{
+		"method": map[string]interface{}{"service": "checkout.Payment", "method": "Create"},
+	}}
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "grpc", "istio", true, "True", "True", listener),
+			route,
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Protocol:      "grpc",
+		RouteFamilies: []string{"GRPCRoute"},
+		Host:          "payments.knm.local",
+		Port:          50051,
+		GRPCService:   "checkout.Payment",
+		GRPCMethod:    "Refund",
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "GRPCRoute service matched for host=payments.knm.local port=50051 grpcService=checkout.Payment grpcMethod=Refund, but no rule matched gRPC method \"Refund\"")
+}
+
+func TestGatewayTrafficIntentExplainsGRPCRouteHeaderMiss(t *testing.T) {
+	listener := testGatewayListener("grpc", nil)
+	listener["hostname"] = "*.knm.local"
+	listener["protocol"] = "HTTP2"
+	listener["port"] = int64(50051)
+	route := testGatewayRouteKind("GRPCRoute", "app", "payments", "edge", "grpc", []map[string]interface{}{
+		testBackendRef("ledger-api", "", int64(50051)),
+	}, "True", "True")
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"payments.knm.local"}
+	rules := route.Object["spec"].(map[string]interface{})["rules"].([]interface{})
+	rules[0].(map[string]interface{})["matches"] = []interface{}{
+		map[string]interface{}{
+			"method": map[string]interface{}{"service": "checkout.Payment", "method": "Create"},
+			"headers": []interface{}{map[string]interface{}{
+				"name":  "x-region",
+				"value": "us",
+			}},
+		},
+		map[string]interface{}{
+			"method": map[string]interface{}{"service": "catalog.Inventory", "method": "List"},
+		},
+	}
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "grpc", "istio", true, "True", "True", listener),
+			route,
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Protocol:      "grpc",
+		RouteFamilies: []string{"GRPCRoute"},
+		Host:          "payments.knm.local",
+		Port:          50051,
+		GRPCService:   "checkout.Payment",
+		GRPCMethod:    "Create",
+		Headers:       map[string]string{"x-region": "eu"},
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "GRPCRoute service/method matched for host=payments.knm.local port=50051 grpcService=checkout.Payment grpcMethod=Create 1 header(s), but request headers did not satisfy any matching rule")
+}
+
+func TestGatewayTrafficIntentTracesTLSRouteBackendProblems(t *testing.T) {
+	listener := testGatewayListener("tls", nil)
+	listener["hostname"] = "*.knm.local"
+	listener["protocol"] = "TLS"
+	listener["port"] = int64(443)
+	route := testGatewayRouteKind("TLSRoute", "app", "invoices", "edge", "tls", []map[string]interface{}{
+		testBackendRef("invoices-api", "", int64(443)),
+	}, "True", "True")
+	route.Object["spec"].(map[string]interface{})["hostnames"] = []interface{}{"invoices.knm.local"}
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "tls", "istio", true, "True", "True", listener),
+			route,
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "invoices-api", 443),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Protocol:      "tls",
+		RouteFamilies: []string{"TLSRoute"},
+		Host:          "invoices.knm.local",
+		Port:          443,
+	})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "TLSRoute app/invoices rule 1 routes to Service app/invoices-api port 443, but that Service has no ready endpoints")
+}
+
 func TestGatewayLocalHTTPProbePreservesHostHeader(t *testing.T) {
 	seenHost := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -814,6 +1090,19 @@ func TestGatewayLocalHTTPProbePreservesHostHeader(t *testing.T) {
 	}
 	if seenHost != "payments.knm.local" {
 		t.Fatalf("host header = %q, want payments.knm.local", seenHost)
+	}
+}
+
+func TestGatewayProbeDialTargetOverride(t *testing.T) {
+	host, port, text, err := gatewayProbeDialTarget("172.18.0.11", 443, "127.0.0.1:61128")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "127.0.0.1" || port != 61128 {
+		t.Fatalf("dial target = %s:%d, want 127.0.0.1:61128", host, port)
+	}
+	if !strings.Contains(text, "172.18.0.11:443") || !strings.Contains(text, "127.0.0.1:61128") {
+		t.Fatalf("dial text = %q, want advertised and override addresses", text)
 	}
 }
 
@@ -1551,6 +1840,116 @@ func TestGatewayBackendWeightTextNormalizesNonHundredTotals(t *testing.T) {
 	}
 }
 
+func TestGatewayCheckServiceFollowupCommand(t *testing.T) {
+	command, ok := gatewayCheckServiceFollowupCommand([]gatewayPathMatch{{
+		RouteKind:        "HTTPRoute",
+		BackendNamespace: "microservices",
+		BackendName:      "gateway-service",
+		BackendPort:      3000,
+	}}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "istio-ingress", Name: "microservices-gateway-istio"}}, gatewayTrafficIntent{Path: "/users"})
+
+	if !ok {
+		t.Fatalf("expected follow-up command")
+	}
+	want := "knm check service -n microservices -t gateway-service --source-namespace istio-ingress -s microservices-gateway-istio --port 3000 --path /users"
+	if command != want {
+		t.Fatalf("unexpected command:\nwant: %s\n got: %s", want, command)
+	}
+}
+
+func TestGatewayCheckServiceFollowupCommandSuppressesAmbiguousBackends(t *testing.T) {
+	_, ok := gatewayCheckServiceFollowupCommand([]gatewayPathMatch{
+		{RouteKind: "HTTPRoute", BackendNamespace: "app", BackendName: "catalog-api", BackendPort: 80},
+		{RouteKind: "HTTPRoute", BackendNamespace: "app", BackendName: "orders-api", BackendPort: 80},
+	}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "public-istio"}}, gatewayTrafficIntent{Path: "/"})
+
+	if ok {
+		t.Fatalf("expected ambiguous backends to suppress follow-up command")
+	}
+}
+
+func TestGatewayCheckServiceFollowupCommandSuppressesNonHTTPRoute(t *testing.T) {
+	_, ok := gatewayCheckServiceFollowupCommand([]gatewayPathMatch{{
+		RouteKind:        "TLSRoute",
+		BackendNamespace: "app",
+		BackendName:      "secure-api",
+		BackendPort:      443,
+	}}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "secure-istio"}}, gatewayTrafficIntent{})
+
+	if ok {
+		t.Fatalf("expected non-HTTP routes to suppress follow-up command")
+	}
+}
+
+func TestGatewayFindDestinationRuleMatchesWildcardHost(t *testing.T) {
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "microservices", Name: "gateway-service"}}
+	dr := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "istio-system", Name: "default"},
+		Spec: networkingapi.DestinationRule{
+			Host: "*.local",
+			TrafficPolicy: &networkingapi.TrafficPolicy{
+				Tls: &networkingapi.ClientTLSSettings{Mode: networkingapi.ClientTLSSettings_ISTIO_MUTUAL},
+			},
+		},
+	}
+
+	got, ok := gatewayFindDestinationRule([]*networkingv1.DestinationRule{dr}, service)
+
+	if !ok {
+		t.Fatalf("expected wildcard DestinationRule to match service FQDN")
+	}
+	if got.Namespace != "istio-system" || got.Name != "default" {
+		t.Fatalf("unexpected DestinationRule: %s/%s", got.Namespace, got.Name)
+	}
+}
+
+func TestInspectGatewayIstioBackendTLSMismatchReportsUnmeshedBackend(t *testing.T) {
+	service := testGatewayService("microservices", "gateway-service", 3000)
+	service.(*corev1.Service).Spec.Selector = map[string]string{"app": "gateway"}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "microservices", Name: "gateway-abc", Labels: map[string]string{"app": "gateway"}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+	meshConfig := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "istio-system", Name: "istio"},
+		Data:       map[string]string{"mesh": "rootNamespace: istio-system\n"},
+	}
+	dr := &networkingv1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "istio-system", Name: "default"},
+		Spec: networkingapi.DestinationRule{
+			Host: "*.local",
+			TrafficPolicy: &networkingapi.TrafficPolicy{
+				Tls: &networkingapi.ClientTLSSettings{Mode: networkingapi.ClientTLSSettings_ISTIO_MUTUAL},
+			},
+		},
+	}
+	client := &kube.Client{
+		Core:  k8sfake.NewSimpleClientset(service, pod, meshConfig),
+		Istio: istiofake.NewSimpleClientset(dr),
+	}
+	report := model.NewReport("check gateway", model.Target{})
+
+	ok := inspectGatewayIstioBackendTLSMismatch(context.Background(), client, report, []gatewayPathMatch{{
+		RouteKind:        "HTTPRoute",
+		BackendNamespace: "microservices",
+		BackendName:      "gateway-service",
+		BackendPort:      3000,
+	}}, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "istio-ingress", Name: "microservices-gateway-istio"}}, "503")
+
+	if !ok {
+		t.Fatal("expected Istio Gateway backend TLS mismatch")
+	}
+	assertGatewayDiagnosisContains(t, report, "Istio DestinationRule \"istio-system/default\" configures ISTIO_MUTUAL TLS for Gateway backend Service \"microservices/gateway-service\"")
+	assertResult(t, report, "Gateway Istio Layer", "istio-system/default", model.StatusFail)
+}
+
 func TestGatewayBroadScanIgnoresZeroWeightBrokenBackend(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
@@ -1905,19 +2304,24 @@ func TestGatewayFindCandidatePathsHonorsListenerAndRouteHostnames(t *testing.T) 
 func fakeGatewayClient(t *testing.T, gatewayObjects []unstructured.Unstructured, coreObjects []kruntime.Object) *kube.Client {
 	t.Helper()
 	listKinds := map[schema.GroupVersionResource]string{
-		backendTLSPolicyGVR: "BackendTLSPolicyList",
-		gatewayClassGVR:     "GatewayClassList",
-		gatewayGVR:          "GatewayList",
-		grpcRouteGVR:        "GRPCRouteList",
-		httpRouteGVR:        "HTTPRouteList",
-		listenerSetGVR:      "ListenerSetList",
-		referenceGVR:        "ReferenceGrantList",
-		tlsRouteGVR:         "TLSRouteList",
+		backendTLSPolicyGVR:          "BackendTLSPolicyList",
+		gatewayClassGVR:              "GatewayClassList",
+		gatewayGVR:                   "GatewayList",
+		grpcRouteGVR:                 "GRPCRouteList",
+		httpRouteGVR:                 "HTTPRouteList",
+		listenerSetGVR:               "ListenerSetList",
+		referenceGVR:                 "ReferenceGrantList",
+		tlsRouteGVR:                  "TLSRouteList",
+		xBackendTrafficPolicyGVR:     "XBackendTrafficPolicyList",
+		envoyBackendTrafficPolicyGVR: "BackendTrafficPolicyList",
+		envoyClientTrafficPolicyGVR:  "ClientTrafficPolicyList",
+		envoySecurityPolicyGVR:       "SecurityPolicyList",
+		envoyEnvoyExtensionPolicyGVR: "EnvoyExtensionPolicyList",
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(kruntime.NewScheme(), listKinds)
 	for i := range gatewayObjects {
 		obj := gatewayObjects[i]
-		gvr := gatewayTestGVRForKind(obj.GetKind())
+		gvr := gatewayTestGVRForObject(obj)
 		var err error
 		if gvr == gatewayClassGVR {
 			_, err = dyn.Resource(gvr).Create(context.Background(), &obj, metav1.CreateOptions{})
@@ -1942,8 +2346,23 @@ func runGatewayIntentScan(ctx context.Context, client *kube.Client, report *mode
 	runGatewayScan(ctx, client, report, opts, intent, true)
 }
 
-func gatewayTestGVRForKind(kind string) schema.GroupVersionResource {
-	switch kind {
+func gatewayTestGVRForObject(object unstructured.Unstructured) schema.GroupVersionResource {
+	if strings.HasPrefix(object.GetAPIVersion(), "gateway.envoyproxy.io/") {
+		switch object.GetKind() {
+		case "BackendTrafficPolicy":
+			return envoyBackendTrafficPolicyGVR
+		case "ClientTrafficPolicy":
+			return envoyClientTrafficPolicyGVR
+		case "SecurityPolicy":
+			return envoySecurityPolicyGVR
+		case "EnvoyExtensionPolicy":
+			return envoyEnvoyExtensionPolicyGVR
+		}
+	}
+	if strings.HasPrefix(object.GetAPIVersion(), "gateway.networking.x-k8s.io/") && object.GetKind() == "XBackendTrafficPolicy" {
+		return xBackendTrafficPolicyGVR
+	}
+	switch object.GetKind() {
 	case "GatewayClass":
 		return gatewayClassGVR
 	case "Gateway":
@@ -1961,7 +2380,7 @@ func gatewayTestGVRForKind(kind string) schema.GroupVersionResource {
 	case "ReferenceGrant":
 		return referenceGVR
 	default:
-		return schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: strings.ToLower(kind) + "s"}
+		return schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: strings.ToLower(object.GetKind()) + "s"}
 	}
 }
 
@@ -2213,6 +2632,36 @@ func testBackendTLSPolicy(namespace, name, targetService, sectionName, caConfigM
 			},
 		},
 	})
+}
+
+func testEnvoyPolicy(kind, namespace, name string, targetRefs []interface{}, acceptedStatus, resolvedStatus, reason string) unstructured.Unstructured {
+	obj := gatewayUnstructured(kind, namespace, name, gatewayPolicyFields(targetRefs, acceptedStatus, resolvedStatus, reason))
+	obj.SetAPIVersion("gateway.envoyproxy.io/v1alpha1")
+	return obj
+}
+
+func testXBackendTrafficPolicy(namespace, name string, targetRefs []interface{}, acceptedStatus, resolvedStatus, reason string) unstructured.Unstructured {
+	obj := gatewayUnstructured("XBackendTrafficPolicy", namespace, name, gatewayPolicyFields(targetRefs, acceptedStatus, resolvedStatus, reason))
+	obj.SetAPIVersion("gateway.networking.x-k8s.io/v1alpha1")
+	return obj
+}
+
+func gatewayPolicyFields(targetRefs []interface{}, acceptedStatus, resolvedStatus, reason string) map[string]interface{} {
+	return map[string]interface{}{
+		"spec": map[string]interface{}{
+			"targetRefs": targetRefs,
+		},
+		"status": map[string]interface{}{
+			"ancestors": []interface{}{
+				map[string]interface{}{
+					"conditions": []interface{}{
+						testGatewayCondition("Accepted", acceptedStatus, reason, ""),
+						testGatewayCondition("ResolvedRefs", resolvedStatus, reason, ""),
+					},
+				},
+			},
+		},
+	}
 }
 
 func gatewayUnstructured(kind, namespace, name string, fields map[string]interface{}) unstructured.Unstructured {

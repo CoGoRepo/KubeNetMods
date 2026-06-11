@@ -215,7 +215,7 @@ func NumericRouteField(text, name string) int {
 }
 
 func ResolveHost(ctx context.Context, target ExecTarget, host string) error {
-	command := fmt.Sprintf("nslookup %s >/dev/null 2>&1 || getent hosts %s >/dev/null 2>&1", ShellQuote(host), ShellQuote(host))
+	command := fmt.Sprintf("if command -v nslookup >/dev/null 2>&1; then nslookup %s >/dev/null 2>&1; elif command -v getent >/dev/null 2>&1; then getent hosts %s >/dev/null 2>&1; else echo 'no resolver tool available: nslookup/getent' >&2; exit 127; fi", ShellQuote(host), ShellQuote(host))
 	_, stderr, err := ExecShell(ctx, target, command)
 	if err != nil {
 		if stderr != "" {
@@ -254,6 +254,12 @@ func CurlURL(ctx context.Context, target ExecTarget, rawURL string, timeout time
 func ClassifyRuntimeHTTPFailure(result RuntimeHTTPResult) RuntimeFailureClassification {
 	text := strings.ToLower(result.Error + " " + result.Output)
 	switch {
+	case IsRuntimeUnavailableText(text):
+		return RuntimeFailureClassification{
+			Kind:      "runtime-unavailable",
+			Summary:   "runtime probe could not run in the source pod",
+			Diagnosis: "The selected source pod does not have usable exec/runtime tooling for this check. Static Kubernetes/CNI/Istio analysis still ran, but live DNS/curl proof is unavailable.",
+		}
 	case strings.Contains(text, "certificate required") || strings.Contains(text, "alert certificate required"):
 		return RuntimeFailureClassification{
 			Kind:      "tls-client-cert-required",
@@ -294,11 +300,46 @@ func ClassifyRuntimeHTTPFailure(result RuntimeHTTPResult) RuntimeFailureClassifi
 	return RuntimeFailureClassification{}
 }
 
+func IsRuntimeUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return IsRuntimeUnavailableText(err.Error())
+}
+
+func IsRuntimeUnavailableText(text string) bool {
+	text = strings.ToLower(text)
+	switch {
+	case strings.Contains(text, "no resolver tool available"):
+		return true
+	case strings.Contains(text, "executable file not found") && strings.Contains(text, "sh"):
+		return true
+	case strings.Contains(text, "stat sh") && strings.Contains(text, "no such file"):
+		return true
+	case strings.Contains(text, "curl: not found"):
+		return true
+	case strings.Contains(text, "curl: command not found"):
+		return true
+	case strings.Contains(text, "sh: curl: not found"):
+		return true
+	case strings.Contains(text, "pods/exec") && strings.Contains(text, "forbidden"):
+		return true
+	case strings.Contains(text, "cannot create resource") && strings.Contains(text, "pods/exec"):
+		return true
+	case strings.Contains(text, "is forbidden") && strings.Contains(text, "exec"):
+		return true
+	default:
+		return false
+	}
+}
+
 func RuntimeProbeFailureMessage(target ExecTarget, rawURL string, result RuntimeHTTPResult, classification RuntimeFailureClassification) string {
 	if classification.Diagnosis == "" {
 		return fmt.Sprintf("%s %q could not reach %s. %s", target.Kind, target.Pod.Name, rawURL, result.Error)
 	}
 	switch classification.Kind {
+	case "runtime-unavailable":
+		return fmt.Sprintf("Skipped live probe to %s from %s %q because runtime exec/tooling is unavailable. %s", rawURL, target.Kind, target.Pod.Name, result.Error)
 	case "tls-client-cert-required", "tls-certificate-validation", "tls-protocol-mismatch", "application-protocol-mismatch":
 		return fmt.Sprintf("%s probe to %s failed from %s %q. %s", ProbeLabel(classification), rawURL, target.Kind, target.Pod.Name, result.Error)
 	default:
@@ -311,6 +352,8 @@ func DirectPodProbeFailureMessage(target ExecTarget, rawURL string, result Runti
 		return fmt.Sprintf("%s failed from %s %q.", rawURL, target.Kind, target.Pod.Name)
 	}
 	switch classification.Kind {
+	case "runtime-unavailable":
+		return fmt.Sprintf("Skipped live direct pod probe to %s from %s %q because runtime exec/tooling is unavailable. %s", rawURL, target.Kind, target.Pod.Name, result.Error)
 	case "tls-client-cert-required", "tls-certificate-validation", "tls-protocol-mismatch", "application-protocol-mismatch":
 		return fmt.Sprintf("%s probe to %s failed from %s %q. %s", ProbeLabel(classification), rawURL, target.Kind, target.Pod.Name, result.Error)
 	default:

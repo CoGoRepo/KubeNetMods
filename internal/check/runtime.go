@@ -66,6 +66,10 @@ func classifyRuntimeHTTPFailure(result RuntimeHTTPResult) RuntimeFailureClassifi
 	return checkruntime.ClassifyRuntimeHTTPFailure(result)
 }
 
+func isRuntimeUnavailableError(err error) bool {
+	return checkruntime.IsRuntimeUnavailableError(err)
+}
+
 func runtimeProbeFailureMessage(target ExecTarget, rawURL string, result RuntimeHTTPResult, classification RuntimeFailureClassification) string {
 	return checkruntime.RuntimeProbeFailureMessage(target, rawURL, result, classification)
 }

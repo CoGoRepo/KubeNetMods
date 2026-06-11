@@ -6,7 +6,7 @@ Use it when something should connect, but does not:
 
 - a workload cannot reach a Kubernetes Service
 - a pod cannot reach an external URL
-- users cannot reach an app through Ingress, NodePort, or LoadBalancer
+- users cannot reach an app through Gateway API, NodePort, or LoadBalancer
 - a policy change may block traffic before a deployment goes live
 - an alert gives you a source, target, URL, timeout, or app name and you need to find the failing layer fast
 
@@ -37,9 +37,9 @@ Use it when something should connect, but does not:
 - Istio sidecar-aware service-path diagnostics when Istio CRDs are installed and readable
 - Istio AuthorizationPolicy DENY matches, ALLOW default-deny behavior, dry-run policy filtering, CUSTOM/external authz visibility, RequestAuthentication/JWT hints, Sidecar egress scope, PeerAuthentication mTLS posture, VirtualService routing, DestinationRule subsets, weighted routes, direct responses, redirects, fault injection, and client TLS mismatches
 - Istio mesh visibility guardrails for `VirtualService.spec.gateways`, `VirtualService.exportTo`, and `DestinationRule.exportTo` so `check service` focuses on config visible to the tested source-to-Service path
-- Ingress route mapping, `spec.defaultBackend`, backend ports, TLS secret readability, IngressClass readability, and annotations
 - Gateway API v1 static scans for GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, ListenerSet, ReferenceGrant, BackendTLSPolicy, listener status, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
-- Gateway API traffic-intent checks for host/path/method/header/query matching, listener and HTTPRoute hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
+- Generic Gateway policy attachment checks for experimental XBackendTrafficPolicy and Envoy Gateway BackendTrafficPolicy, ClientTrafficPolicy, SecurityPolicy, and EnvoyExtensionPolicy target refs/status when those CRDs are installed
+- Gateway API traffic-intent checks for HTTPRoute host/path/method/header/query matching, GRPCRoute service/method/header matching, TLSRoute SNI/hostname matching, listener and route hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
 - Gateway API live HTTP/HTTPS probes that compare the advertised Gateway address with the in-cluster Gateway implementation Service path
 - NodePort and LoadBalancer exposure checks
 - external egress URL checks
@@ -67,7 +67,6 @@ When the evidence points below Kubernetes, `knm` reports that boundary instead o
 | `knm discover` | Find Kubernetes objects by name, label, selector, service account, node, namespace, kind, or cluster/context. |
 | `knm check service` | Troubleshoot a source workload reaching a Kubernetes Service. |
 | `knm check egress` | Troubleshoot a workload reaching an external URL. |
-| `knm check ingress` | Troubleshoot external or node-facing access to an app. |
 | `knm check gateway` | Scan Gateway API resources or trace a specific Gateway request path. |
 | `knm show blockers` | Review policy blockers and preflight policy risk. |
 
@@ -76,7 +75,6 @@ Short aliases:
 ```text
 knm service
 knm egress
-knm ingress
 knm gateway
 ```
 
@@ -87,9 +85,9 @@ Common shorthand flags:
 | Short | Long | Where |
 |---|---|---|
 | `-c` | `--context` | most commands |
-| `-n` | `--namespace` | `discover`, `service`, `ingress`, `gateway`, `show blockers` |
-| `-p` | `--port` | `service`, `ingress`, `show blockers` |
-| `-t` | `--target` / target Service | `service`, `ingress` |
+| `-n` | `--namespace` | `discover`, `service`, `gateway`, `show blockers` |
+| `-p` | `--port` | `service`, `show blockers` |
+| `-t` | `--target` / target Service | `service` |
 | `-s` | `--source` | `service` |
 | `-d` | `--deployment` | `service` |
 
@@ -295,23 +293,6 @@ knm check egress `
 
 This checks source pod DNS, URL resolution, HTTP reachability, native NetworkPolicy egress posture, Calico outbound posture, and Cilium outbound/DNS posture when available.
 
-## Check Ingress Or LoadBalancer Access
-
-Use this when users or external systems cannot reach an app.
-
-```powershell
-knm check ingress `
-  --cluster prod `
-  --namespace apps `
-  --service api `
-  --port 443 `
-  --ingress-url https://api.example.com `
-  --test-load-balancer `
-  --html .\reports\ingress.html
-```
-
-This checks the Service, selected port, Ingress backend mapping, default backends, TLS secrets, IngressClass, annotations, explicit URL reachability, LoadBalancer address state, and Calico host-policy posture when available.
-
 ## Check Gateway API
 
 Use this when Gateway API objects are involved in external access to an app.
@@ -322,7 +303,7 @@ knm check gateway
 
 The no-parameter run is a static/status scan. It checks Gateway API v1 objects across the current cluster and reports obvious problems without running live probes or inferring a specific request path.
 
-The broad scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute/GRPCRoute/TLSRoute attachment and status, ListenerSet status and TLS refs, BackendTLSPolicy targets and CA refs, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
+The broad scan checks GatewayClass acceptance, Gateway acceptance/programming/address state, listener status, TLS Secret references, HTTPRoute/GRPCRoute/TLSRoute attachment and status, ListenerSet status and TLS refs, BackendTLSPolicy targets and CA refs, Gateway policy target refs/status for supported generic and Envoy policy CRDs, cross-namespace ReferenceGrant requirements, backend Service existence, Service port matches, and ready EndpointSlices.
 
 Scope filters narrow that scan:
 
@@ -370,7 +351,7 @@ Traffic-intent mode traces the request through matching Gateway listeners, attac
 
 `--url` owns scheme, host, port, path, and query. `--method`, `--header`, and `--expect-service` can be combined with `--url`. If you do not use `--url`, provide `--host`; `--path` defaults to `/` and `--method` defaults to `GET`.
 
-Gateway protocol inference supports HTTP/HTTPS request tracing today and safely identifies GRPCRoute/TLSRoute intent when you provide `--grpc-service`, `--grpc-method`, `--protocol grpc`, `--protocol tls`, or a TLS-style `--host ... --port 443`.
+Gateway protocol inference supports HTTP/HTTPS, GRPCRoute, and TLSRoute traffic intent. Use `--grpc-service`, `--grpc-method`, or `--protocol grpc` for GRPCRoute paths. Use `--protocol tls` or a TLS-style `--host ... --port 443` for TLSRoute/SNI paths.
 
 Use `--probe` when you want runtime proof for an HTTP/HTTPS Gateway path:
 
@@ -382,6 +363,15 @@ knm check gateway `
 ```
 
 With `--probe`, KNM tests the advertised Gateway address from the workstation/client side and, when it can create or reuse a debug pod, the in-cluster Gateway implementation Service. That lets it separate "Gateway proxy works inside the cluster" from "the client cannot reach the advertised Gateway address."
+
+Local labs sometimes advertise a Gateway address that is valid inside Docker or kind but not routable from the workstation. Use `--probe-address host[:port]` to keep tracing the original Gateway URL while dialing a local proxy address for the workstation-side probe:
+
+```powershell
+knm check gateway `
+  --url https://microservices.local/users `
+  --probe `
+  --probe-address 127.0.0.1:61128
+```
 
 ## Show Policy Blockers
 
@@ -434,6 +424,8 @@ Most diagnostic commands support:
 --json path
 --quiet
 --no-terminal
+--fail-on-warn
+--ignore-warn category[,category]
 ```
 
 HTML reports are for humans. JSON reports are for automation, CI, issue attachments, and downstream tooling.
@@ -443,6 +435,31 @@ Terminal output modes:
 - default: print the full terminal report
 - `--quiet`: print only the inferred diagnosis
 - `--no-terminal` / `--no-term`: print no successful stdout output, useful when writing JSON/HTML for automation
+
+Automation exit controls:
+
+- `--fail-on-warn`: exit non-zero when the report contains a `WARN` result
+- `--ignore-warn`: with `--fail-on-warn`, ignore specific warning categories for exit-code decisions
+
+Warning category aliases:
+
+| Alias | Category |
+|---|---|
+| `1` | `runtime-unavailable` |
+| `2` | `api-inspection` |
+| `3` | `policy-ambiguous` |
+| `4` | `conditional-routing` |
+| `5` | `unsupported-ref` |
+| `6` | `output-limited` |
+| `7` | `uncategorized` |
+
+Example:
+
+```powershell
+knm check service -n app -t orders-api -s web-client `
+  --fail-on-warn `
+  --ignore-warn runtime-unavailable,output-limited
+```
 
 ## Examples
 
@@ -459,8 +476,7 @@ The `examples/` directory contains sample alerts, HTML reports, JSON reports, an
 - Services
 - EndpointSlices
 - Events
-- Ingresses and IngressClasses
-- TLS Secrets referenced by Ingress
+- Ingresses for discovery results
 - NetworkPolicies
 - Calico CRDs
 - Cilium CRDs

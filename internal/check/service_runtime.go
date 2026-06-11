@@ -55,12 +55,16 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 				continue
 			}
 			if err := resolveHost(ctx, *source, host); err != nil {
-				report.Add("Source-to-Target DNS Layer", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
-				if !hasDiagnosisContaining(report, "runtime DNS resolver") {
-					report.Diagnose(fmt.Sprintf("Source namespace %q cannot resolve target service name %q. Check DNS policy, CoreDNS/NodeLocalDNS, and egress DNS policy.", source.Pod.Namespace, host))
+				if isRuntimeUnavailableError(err) {
+					report.AddCategorized("Source-to-Target DNS Layer", "resolve "+host, model.StatusWarn, "runtime-unavailable", fmt.Sprintf("Skipped explicit DNS precheck for %q from %s %q because resolver tooling is unavailable: %v", host, source.Kind, source.Pod.Name, err))
+				} else {
+					report.Add("Source-to-Target DNS Layer", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
+					if !hasDiagnosisContaining(report, "runtime DNS resolver") {
+						report.Diagnose(fmt.Sprintf("Source namespace %q cannot resolve target service name %q. Check DNS policy, CoreDNS/NodeLocalDNS, and egress DNS policy.", source.Pod.Namespace, host))
+					}
+					report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusSkip, fmt.Sprintf("Skipped curl because %q did not resolve from %s %q.", host, source.Kind, source.Pod.Name))
+					continue
 				}
-				report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusSkip, fmt.Sprintf("Skipped curl because %q did not resolve from %s %q.", host, source.Kind, source.Pod.Name))
-				continue
 			} else {
 				report.Add("Source-to-Target DNS Layer", "resolve "+host, model.StatusPass, fmt.Sprintf("%s %q resolved %q.", source.Kind, source.Pod.Name, host))
 			}
@@ -84,6 +88,10 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 			}
 		} else {
 			classification := classifyRuntimeHTTPFailure(result)
+			if classification.Kind == "runtime-unavailable" {
+				report.AddCategorized("Source-to-Target Runtime Layer", rawURL, model.StatusWarn, "runtime-unavailable", runtimeProbeFailureMessage(*source, rawURL, result, classification))
+				continue
+			}
 			report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusFail, runtimeProbeFailureMessage(*source, rawURL, result, classification))
 			if classification.Diagnosis != "" {
 				if !hasDiagnosisContaining(report, classification.Summary) {
@@ -141,6 +149,10 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 			}
 		} else {
 			classification := classifyRuntimeHTTPFailure(result)
+			if classification.Kind == "runtime-unavailable" {
+				report.AddCategorized("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusWarn, "runtime-unavailable", directPodProbeFailureMessage(*source, rawURL, result, classification))
+				continue
+			}
 			if servicePathSucceeded && pathHasIstioSidecar(source, targetPods) {
 				report.Add("Pod-to-Pod Connectivity Layer", fmt.Sprintf("%s to %s:%d", source.Kind, pod.Name, podPort), model.StatusInfo, directPodProbeFailureMessage(*source, rawURL, result, classification)+" Service path already succeeded; direct pod IP checks can bypass normal Istio service routing/SNI/TLS behavior.")
 				continue

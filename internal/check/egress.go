@@ -112,9 +112,13 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 			report.Add("Outbound Policy Posture", "target "+host, model.StatusInfo, fmt.Sprintf("Skipped port-specific policy posture for %q because no numeric port could be inferred.", rawURL))
 		}
 		if err := resolveHost(ctx, *source, host); err != nil {
-			report.Add("Outbound Reachability", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
-			if !hasDiagnosisContaining(report, "runtime DNS resolver") {
-				report.Diagnose(fmt.Sprintf("DNS resolution failed for outbound target %q from source pod %q. Check DNS policy, CoreDNS/NodeLocalDNS, egress DNS policy, proxy, or upstream resolver access.", host, source.Pod.Name))
+			if isRuntimeUnavailableError(err) {
+				report.AddCategorized("Outbound Reachability", "resolve "+host, model.StatusWarn, "runtime-unavailable", fmt.Sprintf("Skipped explicit DNS precheck for %q from %s %q because resolver tooling is unavailable: %v", host, source.Kind, source.Pod.Name, err))
+			} else {
+				report.Add("Outbound Reachability", "resolve "+host, model.StatusFail, fmt.Sprintf("%s %q could not resolve %q.", source.Kind, source.Pod.Name, host))
+				if !hasDiagnosisContaining(report, "runtime DNS resolver") {
+					report.Diagnose(fmt.Sprintf("DNS resolution failed for outbound target %q from source pod %q. Check DNS policy, CoreDNS/NodeLocalDNS, egress DNS policy, proxy, or upstream resolver access.", host, source.Pod.Name))
+				}
 			}
 		} else {
 			report.Add("Outbound Reachability", "resolve "+host, model.StatusPass, fmt.Sprintf("%s %q resolved %q.", source.Kind, source.Pod.Name, host))
@@ -124,6 +128,10 @@ func RunEgress(ctx context.Context, opts EgressOptions) (*model.Report, error) {
 			report.Add("Outbound Reachability", rawURL, model.StatusPass, fmt.Sprintf("%s %q reached %q. HTTP status: %s", source.Kind, source.Pod.Name, rawURL, curl.StatusCode))
 		} else {
 			classification := classifyRuntimeHTTPFailure(curl)
+			if classification.Kind == "runtime-unavailable" {
+				report.AddCategorized("Outbound Reachability", rawURL, model.StatusWarn, "runtime-unavailable", runtimeProbeFailureMessage(*source, rawURL, curl, classification))
+				continue
+			}
 			report.Add("Outbound Reachability", rawURL, model.StatusFail, runtimeProbeFailureMessage(*source, rawURL, curl, classification))
 			if classification.Diagnosis != "" {
 				report.Diagnose(fmt.Sprintf("Primary issue: %s for %q from source pod %q. %s", classification.Summary, rawURL, source.Pod.Name, classification.Diagnosis))
@@ -237,11 +245,11 @@ func inspectEgressPolicyContext(ctx context.Context, client *kube.Client, report
 	}
 	names := nativePolicyNames(selecting)
 	if len(defaultDeny) > 0 {
-		report.Add("Source Policy Posture", "native egress", model.StatusWarn, fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Policy object(s) with no egress rules default-deny all egress: %s.", source.Kind, source.Pod.Name, strings.Join(names, ", "), strings.Join(defaultDeny, ", ")))
+		report.AddCategorized("Source Policy Posture", "native egress", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Policy object(s) with no egress rules default-deny all egress: %s.", source.Kind, source.Pod.Name, strings.Join(names, ", "), strings.Join(defaultDeny, ", ")))
 		report.Diagnose(fmt.Sprintf("Primary issue: source pod %q has native egress default-deny policy (%s). Outbound DNS and URL traffic may be blocked before it leaves the cluster.", source.Pod.Name, strings.Join(defaultDeny, ", ")))
 		return
 	}
-	report.Add("Source Policy Posture", "native egress", model.StatusWarn, fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Outbound URL checks are the runtime tie-breaker.", source.Kind, source.Pod.Name, strings.Join(names, ", ")))
+	report.AddCategorized("Source Policy Posture", "native egress", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("%s %q is selected by egress NetworkPolicy (%s). Outbound URL checks are the runtime tie-breaker.", source.Kind, source.Pod.Name, strings.Join(names, ", ")))
 }
 
 func urlPortText(parsed *url.URL) string {

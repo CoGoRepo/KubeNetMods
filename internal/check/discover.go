@@ -296,7 +296,7 @@ func addIngressResult(results *[]DiscoverResult, opts DiscoverOptions, selector 
 	if !ok {
 		return
 	}
-	*results = append(*results, DiscoverResult{Kind: "Ingress", Namespace: ingress.Namespace, Name: ingress.Name, Match: match, Hint: "check ingress", Group: ingress.Name})
+	*results = append(*results, DiscoverResult{Kind: "Ingress", Namespace: ingress.Namespace, Name: ingress.Name, Match: match, Hint: "legacy Ingress object", Group: ingress.Name})
 }
 
 func addNetworkPolicyResult(results *[]DiscoverResult, opts DiscoverOptions, selector labels.Selector, query string, policy networkingv1.NetworkPolicy) {
