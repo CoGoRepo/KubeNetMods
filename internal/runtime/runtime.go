@@ -94,10 +94,7 @@ func BuildServiceURLs(service *corev1.Service, namespace, name, scheme, path str
 		return []string{fmt.Sprintf("%s://%s:%d%s", scheme, service.Spec.ExternalName, port, path)}
 	}
 	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", name, namespace)
-	out := []string{
-		fmt.Sprintf("%s://%s:%d%s", scheme, name, port, path),
-		fmt.Sprintf("%s://%s:%d%s", scheme, fqdn, port, path),
-	}
+	out := []string{fmt.Sprintf("%s://%s:%d%s", scheme, fqdn, port, path)}
 	if service.Spec.ClusterIP != "" && service.Spec.ClusterIP != "None" {
 		out = append(out, fmt.Sprintf("%s://%s:%d%s", scheme, service.Spec.ClusterIP, port, path))
 	}

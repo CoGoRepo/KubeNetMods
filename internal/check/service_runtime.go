@@ -49,11 +49,6 @@ func checkRuntimePath(ctx context.Context, client *kube.Client, report *model.Re
 	for _, rawURL := range urls {
 		host := hostFromURL(rawURL)
 		if host != "" && host != service.Spec.ClusterIP {
-			if host == opts.Service && source.Pod.Namespace != opts.Namespace {
-				report.Add("Source-to-Target DNS Layer", "short name "+host, model.StatusInfo, fmt.Sprintf("Short name %q is source-namespace local. Cross-namespace checks use %q or the Service ClusterIP.", host, opts.Service+"."+opts.Namespace))
-				report.Add("Source-to-Target Runtime Layer", rawURL, model.StatusSkip, fmt.Sprintf("Skipped short-name curl because source namespace %q differs from target namespace %q.", source.Pod.Namespace, opts.Namespace))
-				continue
-			}
 			if err := resolveHost(ctx, *source, host); err != nil {
 				if isRuntimeUnavailableError(err) {
 					report.AddCategorized("Source-to-Target DNS Layer", "resolve "+host, model.StatusWarn, "runtime-unavailable", fmt.Sprintf("Skipped explicit DNS precheck for %q from %s %q because resolver tooling is unavailable: %v", host, source.Kind, source.Pod.Name, err))
