@@ -441,6 +441,18 @@ Terminal output modes:
 
 Runtime checks require permission to exec into the selected source pod. Debug-pod checks require permission to create and delete the debug pod.
 
+## Security Scanning
+
+KubeNetMods release hardening uses several checks before publishing:
+
+- `go test ./...` for regression coverage
+- `go test -race ./...` for data race detection
+- `go vet ./...` for Go correctness checks
+- `govulncheck ./...` for reachable Go dependency vulnerabilities
+- `gosec ./...` for security-oriented static analysis
+
+Release artifacts also include SHA256 checksums and GitHub build provenance attestations. Windows Authenticode publisher signing is not configured yet.
+
 ## Examples
 
 The `examples/` directory contains sample alerts, HTML reports, JSON reports, and demo media. The Istio examples under `examples/reports/istio/` show real `check service` diagnoses for AuthorizationPolicy, RequestAuthentication, VirtualService, DestinationRule, Sidecar, and mTLS failure cases.
