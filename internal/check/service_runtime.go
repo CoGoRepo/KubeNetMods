@@ -230,9 +230,11 @@ func directPodPortCandidates(service *corev1.Service, servicePort int32, ports [
 				out = append(out, port.Port)
 			}
 		}
-		if len(out) == 0 && target.Type == intstr.Int && target.IntVal > 0 && !seen[int32(target.IntVal)] {
-			seen[int32(target.IntVal)] = true
-			out = append(out, int32(target.IntVal))
+		if len(out) == 0 && target.Type == intstr.Int {
+			if targetPort, ok := int32PortFromInt(int(target.IntVal)); ok && !seen[targetPort] {
+				seen[targetPort] = true
+				out = append(out, targetPort)
+			}
 		}
 	}
 	for _, port := range ports {

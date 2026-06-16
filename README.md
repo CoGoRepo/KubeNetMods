@@ -58,7 +58,7 @@ Istio service-path checks:
 
 Gateway API checks:
 
-- GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, ListenerSet, ReferenceGrant, BackendTLSPolicy, listener status, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
+- GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, UDPRoute, ListenerSet, ReferenceGrant, BackendTLSPolicy, listener status, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
 - Gateway implementation Service checks, including listener port exposure and ready dataplane endpoints
 - generic Gateway policy attachment checks for experimental XBackendTrafficPolicy and Envoy Gateway BackendTrafficPolicy, ClientTrafficPolicy, SecurityPolicy, and EnvoyExtensionPolicy target refs/status when those CRDs are installed
 - traffic-intent checks for HTTPRoute host/path/method/header/query matching, GRPCRoute service/method/header matching, TLSRoute SNI/hostname matching, listener and route hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
@@ -168,7 +168,7 @@ The broad scan checks:
 
 - GatewayClass acceptance
 - Gateway acceptance, programming, listener status, address state, and TLS Secret references
-- HTTPRoute, GRPCRoute, and TLSRoute attachment and parent status
+- HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, and UDPRoute attachment and parent status
 - ListenerSet status and TLS refs
 - BackendTLSPolicy targets and CA refs
 - supported generic and Envoy Gateway policy target refs/status

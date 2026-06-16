@@ -443,6 +443,10 @@ func runService(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		opts.Deployment = opts.Service
 		opts.DeploymentDefaulted = true
 	}
+	if servicePort < 0 || servicePort > 65535 {
+		fmt.Fprintln(stderr, "--port must be between 0 and 65535")
+		return 2
+	}
 	opts.ServicePort = int32(servicePort)
 	opts.HTTPHeaders = headers
 	if timeoutSeconds <= 0 {

@@ -27,3 +27,24 @@ func hasNodeLocalResolver(values []string) bool {
 	}
 	return false
 }
+
+func int32PortFromInt(value int) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
+func int32PortFromInt64(value int64) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
+func uint32PortFromInt32(value int32) (uint32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return uint32(value), true
+}

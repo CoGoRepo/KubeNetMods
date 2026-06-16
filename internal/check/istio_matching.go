@@ -50,14 +50,14 @@ func newIstioHTTPRequest(opts ServiceOptions, service *corev1.Service, source *E
 	if scheme == "" {
 		scheme = "http"
 	}
-	port := uint32(opts.ServicePort)
+	port, _ := uint32PortFromInt32(opts.ServicePort)
 	if port == 0 && service != nil && len(service.Spec.Ports) > 0 {
-		port = uint32(service.Spec.Ports[0].Port)
+		port, _ = uint32PortFromInt32(service.Spec.Ports[0].Port)
 	}
 	authzPort := port
 	if service != nil {
 		if selected, ok := selectServicePort(service, opts.ServicePort); ok && selected.TargetPort.Type == intstr.Int && selected.TargetPort.IntVal > 0 {
-			authzPort = uint32(selected.TargetPort.IntVal)
+			authzPort, _ = uint32PortFromInt32(selected.TargetPort.IntVal)
 		}
 	}
 	sourceNamespace := opts.SourceNamespace

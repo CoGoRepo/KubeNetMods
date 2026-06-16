@@ -36,6 +36,8 @@ var (
 	listenerSetGVR      = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "listenersets"}
 	referenceGVR        = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "referencegrants"}
 	tlsRouteGVR         = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1", Resource: "tlsroutes"}
+	tcpRouteGVR         = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1alpha2", Resource: "tcproutes"}
+	udpRouteGVR         = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1alpha2", Resource: "udproutes"}
 
 	xBackendTrafficPolicyGVR             = schema.GroupVersionResource{Group: "gateway.networking.x-k8s.io", Version: "v1alpha1", Resource: "xbackendtrafficpolicies"}
 	envoyBackendTrafficPolicyGVR         = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "backendtrafficpolicies"}
@@ -171,6 +173,8 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	routes, routeErr := gatewayList(ctx, client, httpRouteGVR, namespace)
 	grpcRoutes, grpcRouteErr := gatewayList(ctx, client, grpcRouteGVR, namespace)
 	tlsRoutes, tlsRouteErr := gatewayList(ctx, client, tlsRouteGVR, namespace)
+	tcpRoutes, tcpRouteErr := gatewayList(ctx, client, tcpRouteGVR, namespace)
+	udpRoutes, udpRouteErr := gatewayList(ctx, client, udpRouteGVR, namespace)
 	listenerSets, listenerSetErr := gatewayList(ctx, client, listenerSetGVR, namespace)
 	backendTLSPolicies, backendTLSPolicyErr := gatewayList(ctx, client, backendTLSPolicyGVR, namespace)
 	xBackendTrafficPolicies, xBackendTrafficPolicyErr := gatewayList(ctx, client, xBackendTrafficPolicyGVR, namespace)
@@ -181,7 +185,8 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	refGrants, refGrantErr := gatewayList(ctx, client, referenceGVR, metav1.NamespaceAll)
 
 	if gatewayAPIMissing(classErr) && gatewayAPIMissing(gatewayErr) && gatewayAPIMissing(routeErr) && gatewayAPIMissing(parentGatewayErr) &&
-		gatewayAPIMissing(grpcRouteErr) && gatewayAPIMissing(tlsRouteErr) && gatewayAPIMissing(listenerSetErr) && gatewayAPIMissing(backendTLSPolicyErr) &&
+		gatewayAPIMissing(grpcRouteErr) && gatewayAPIMissing(tlsRouteErr) && gatewayAPIMissing(tcpRouteErr) && gatewayAPIMissing(udpRouteErr) &&
+		gatewayAPIMissing(listenerSetErr) && gatewayAPIMissing(backendTLSPolicyErr) &&
 		gatewayAPIMissing(xBackendTrafficPolicyErr) && gatewayAPIMissing(envoyBackendTrafficPolicyErr) && gatewayAPIMissing(envoyClientTrafficPolicyErr) &&
 		gatewayAPIMissing(envoySecurityPolicyErr) && gatewayAPIMissing(envoyExtensionPolicyErr) {
 		report.Add("Gateway API Access", "v1 resources", model.StatusInfo, "Gateway API v1 resources were not found in this cluster.")
@@ -204,6 +209,12 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	}
 	if tlsRouteErr != nil && !gatewayAPIMissing(tlsRouteErr) {
 		scanner.addProblemCategorized("Gateway API Access", "TLSRoute list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list TLSRoute objects: %v", tlsRouteErr), "")
+	}
+	if tcpRouteErr != nil && !gatewayAPIMissing(tcpRouteErr) {
+		scanner.addProblemCategorized("Gateway API Access", "TCPRoute list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list TCPRoute objects: %v", tcpRouteErr), "")
+	}
+	if udpRouteErr != nil && !gatewayAPIMissing(udpRouteErr) {
+		scanner.addProblemCategorized("Gateway API Access", "UDPRoute list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list UDPRoute objects: %v", udpRouteErr), "")
 	}
 	if listenerSetErr != nil && !gatewayAPIMissing(listenerSetErr) {
 		scanner.addProblemCategorized("Gateway API Access", "ListenerSet list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list ListenerSet objects: %v", listenerSetErr), "")
@@ -235,6 +246,8 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	gatewaySortObjects(routes)
 	gatewaySortObjects(grpcRoutes)
 	gatewaySortObjects(tlsRoutes)
+	gatewaySortObjects(tcpRoutes)
+	gatewaySortObjects(udpRoutes)
 	gatewaySortObjects(listenerSets)
 	gatewaySortObjects(backendTLSPolicies)
 	gatewaySortObjects(xBackendTrafficPolicies)
@@ -273,6 +286,8 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	scanner.scanHTTPRoutes(ctx, client, routes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanGenericRoutes(ctx, client, "GRPCRoute", grpcRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanGenericRoutes(ctx, client, "TLSRoute", tlsRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+	scanner.scanGenericRoutes(ctx, client, "TCPRoute", tcpRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+	scanner.scanGenericRoutes(ctx, client, "UDPRoute", udpRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanListenerSets(ctx, client, listenerSets, parentGateways, refGrants)
 	scanner.scanBackendTLSPolicies(ctx, client, backendTLSPolicies, serviceCache, serviceErrCache)
 	gatewayTargets := gatewayPolicyTargetIndexes{
@@ -280,6 +295,8 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 		HTTPRoutes: gatewayIndex(routes),
 		GRPCRoutes: gatewayIndex(grpcRoutes),
 		TLSRoutes:  gatewayIndex(tlsRoutes),
+		TCPRoutes:  gatewayIndex(tcpRoutes),
+		UDPRoutes:  gatewayIndex(udpRoutes),
 	}
 	scanner.scanGatewayPolicyAttachments(ctx, client, xBackendTrafficPolicies, "XBackendTrafficPolicy", "Gateway Policy Layer", nil, gatewayTargets, serviceCache, serviceErrCache)
 	scanner.scanGatewayPolicyAttachments(ctx, client, envoyBackendTrafficPolicies, "Envoy BackendTrafficPolicy", "Envoy Gateway Policy Layer", envoyBackendTrafficPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
@@ -287,7 +304,7 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	scanner.scanGatewayPolicyAttachments(ctx, client, envoySecurityPolicies, "Envoy SecurityPolicy", "Envoy Gateway Policy Layer", envoySecurityPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
 	scanner.scanGatewayPolicyAttachments(ctx, client, envoyExtensionPolicies, "Envoy EnvoyExtensionPolicy", "Envoy Gateway Policy Layer", envoyExtensionPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
 
-	scanner.finish(len(classes), len(gateways), len(routes), len(grpcRoutes), len(tlsRoutes), len(listenerSets), len(backendTLSPolicies), len(xBackendTrafficPolicies), len(envoyBackendTrafficPolicies), len(envoyClientTrafficPolicies), len(envoySecurityPolicies), len(envoyExtensionPolicies))
+	scanner.finish(len(classes), len(gateways), len(routes), len(grpcRoutes), len(tlsRoutes), len(tcpRoutes), len(udpRoutes), len(listenerSets), len(backendTLSPolicies), len(xBackendTrafficPolicies), len(envoyBackendTrafficPolicies), len(envoyClientTrafficPolicies), len(envoySecurityPolicies), len(envoyExtensionPolicies))
 	dedupeGatewayDiagnoses(report)
 }
 
@@ -406,7 +423,8 @@ func gatewayTrafficIntentFromOptions(opts GatewayOptions) (gatewayTrafficIntent,
 			if err != nil || parsedPort <= 0 || parsedPort > 65535 {
 				return gatewayTrafficIntent{}, true, fmt.Errorf("Invalid Gateway traffic URL port %q.", port)
 			}
-			intent.Port = int32(parsedPort)
+			intentPort, _ := int32PortFromInt(parsedPort)
+			intent.Port = intentPort
 		} else {
 			intent.Port = gatewayDefaultPortForScheme(intent.Scheme)
 		}
@@ -984,8 +1002,9 @@ func (s *gatewayScanner) scanHTTPRoutes(ctx context.Context, client *kube.Client
 		}
 		s.scannedRoutes++
 		routeName := objectRefText(route)
-		s.scanRouteParents("HTTPRoute", route, gatewayIndex)
-		s.scanRouteBackendRefs(ctx, client, "HTTPRoute", route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		if s.scanRouteParents("HTTPRoute", route, gatewayIndex) {
+			s.scanRouteBackendRefs(ctx, client, "HTTPRoute", route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		}
 		s.addWide("HTTPRoute Layer", routeName, model.StatusPass, fmt.Sprintf("HTTPRoute %s scanned.", routeName))
 	}
 }
@@ -1003,8 +1022,9 @@ func (s *gatewayScanner) scanGenericRoutes(ctx context.Context, client *kube.Cli
 		}
 		s.scannedOther++
 		routeName := objectRefText(route)
-		s.scanRouteParents(kind, route, gatewayIndex)
-		s.scanRouteBackendRefs(ctx, client, kind, route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		if s.scanRouteParents(kind, route, gatewayIndex) {
+			s.scanRouteBackendRefs(ctx, client, kind, route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
+		}
 		s.addWide(kind+" Layer", routeName, model.StatusPass, fmt.Sprintf("%s %s scanned.", kind, routeName))
 	}
 }
@@ -1201,6 +1221,8 @@ type gatewayPolicyTargetIndexes struct {
 	HTTPRoutes map[string]unstructured.Unstructured
 	GRPCRoutes map[string]unstructured.Unstructured
 	TLSRoutes  map[string]unstructured.Unstructured
+	TCPRoutes  map[string]unstructured.Unstructured
+	UDPRoutes  map[string]unstructured.Unstructured
 }
 
 func (s *gatewayScanner) scanGatewayPolicyAttachments(ctx context.Context, client *kube.Client, policies []unstructured.Unstructured, policyKind, layer string, allowedKinds map[string]bool, targets gatewayPolicyTargetIndexes, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
@@ -1268,6 +1290,10 @@ func (s *gatewayScanner) scanGatewayPolicyTargets(ctx context.Context, client *k
 			s.scanGatewayPolicyRouteTarget(policyKind, layer, name, check, "GRPCRoute", targetRefName, sectionName, targets.GRPCRoutes)
 		case "TLSRoute":
 			s.scanGatewayPolicyRouteTarget(policyKind, layer, name, check, "TLSRoute", targetRefName, sectionName, targets.TLSRoutes)
+		case "TCPRoute":
+			s.scanGatewayPolicyRouteTarget(policyKind, layer, name, check, "TCPRoute", targetRefName, sectionName, targets.TCPRoutes)
+		case "UDPRoute":
+			s.scanGatewayPolicyRouteTarget(policyKind, layer, name, check, "UDPRoute", targetRefName, sectionName, targets.UDPRoutes)
 		default:
 			message := fmt.Sprintf("%s %s targets kind %s %s; KNM does not evaluate that target type.", policyKind, name, gatewayBackendKindText(group, kind), targetRefName)
 			s.addProblemCategorized(layer, check, model.StatusWarn, "unsupported-ref", message, message)
@@ -1299,7 +1325,7 @@ func gatewayPolicyCanonicalTargetKind(group, kind string) string {
 	switch {
 	case group == "" && kind == "Service":
 		return "Service"
-	case (group == "" || group == gatewayv1.GroupName) && (kind == "Gateway" || kind == "HTTPRoute" || kind == "GRPCRoute" || kind == "TLSRoute"):
+	case (group == "" || group == gatewayv1.GroupName) && (kind == "Gateway" || kind == "HTTPRoute" || kind == "GRPCRoute" || kind == "TLSRoute" || kind == "TCPRoute" || kind == "UDPRoute"):
 		return kind
 	default:
 		return ""
@@ -1388,7 +1414,7 @@ func (s *gatewayScanner) scanHTTPRouteParents(route unstructured.Unstructured, g
 	s.scanRouteParents("HTTPRoute", route, gatewayIndex)
 }
 
-func (s *gatewayScanner) scanRouteParents(kind string, route unstructured.Unstructured, gatewayIndex map[string]unstructured.Unstructured) {
+func (s *gatewayScanner) scanRouteParents(kind string, route unstructured.Unstructured, gatewayIndex map[string]unstructured.Unstructured) bool {
 	routeName := objectRefText(route)
 	parentRefs := sliceField(route.Object, "spec", "parentRefs")
 	if len(parentRefs) == 0 {
@@ -1414,7 +1440,7 @@ func (s *gatewayScanner) scanRouteParents(kind string, route unstructured.Unstru
 	parents := sliceField(route.Object, "status", "parents")
 	if len(parents) == 0 {
 		s.addProblem("Route Attachment Layer", routeName+" status", model.StatusWarn, fmt.Sprintf("%s %s has no status.parents entries.", kind, routeName), fmt.Sprintf("%s %s has no parent status, so no Gateway has reported accepting it yet.", kind, routeName))
-		return
+		return false
 	}
 	accepted := false
 	acceptedConditionSeen := false
@@ -1443,6 +1469,7 @@ func (s *gatewayScanner) scanRouteParents(kind string, route unstructured.Unstru
 	if !accepted && !acceptedConditionSeen {
 		s.addProblem("Route Attachment Layer", routeName+" accepted", model.StatusWarn, fmt.Sprintf("%s %s has no Accepted=True parent status.", kind, routeName), fmt.Sprintf("%s %s is not currently accepted by any Gateway parent.", kind, routeName))
 	}
+	return accepted
 }
 
 func (s *gatewayScanner) scanHTTPRouteBackendRefs(ctx context.Context, client *kube.Client, route unstructured.Unstructured, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
@@ -1857,7 +1884,8 @@ func gatewayProbeDialTarget(address string, port int32, override string) (string
 			return "", 0, defaultText, fmt.Errorf("port must be between 1 and 65535")
 		}
 		text := fmt.Sprintf("%s using probe address %s", defaultText, net.JoinHostPort(host, rawPort))
-		return host, int32(parsedPort), text, nil
+		probePort, _ := int32PortFromInt(parsedPort)
+		return host, probePort, text, nil
 	}
 	if strings.Contains(override, ":") {
 		return "", 0, defaultText, err
@@ -2001,6 +2029,9 @@ func shellQuoteIfNeeded(value string) string {
 
 func ensureGatewayDebugPod(ctx context.Context, client *kube.Client, namespace, name, image, imagePullPolicy string, timeout time.Duration) (*corev1.Pod, error) {
 	existing, err := client.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil && !kube.IsKubeNetModsDebugPod(existing) {
+		return nil, fmt.Errorf("refusing to reuse pod %s/%s because it is not labeled as a KubeNetMods debug pod", namespace, name)
+	}
 	if err == nil && existing.DeletionTimestamp == nil && existing.Status.Phase == corev1.PodRunning && podReady(*existing) {
 		return existing, nil
 	}
@@ -4378,10 +4409,7 @@ func stringField(object map[string]interface{}, fields ...string) string {
 
 func int32Field(object map[string]interface{}, fields ...string) (int32, bool) {
 	if value, ok, _ := unstructured.NestedInt64(object, fields...); ok {
-		if value > 0 && value <= 65535 {
-			return int32(value), true
-		}
-		return 0, false
+		return int32PortFromInt64(value)
 	}
 	raw, ok, _ := unstructured.NestedString(object, fields...)
 	if !ok {
@@ -4391,7 +4419,7 @@ func int32Field(object map[string]interface{}, fields ...string) (int32, bool) {
 	if err != nil || parsed <= 0 || parsed > 65535 {
 		return 0, false
 	}
-	return int32(parsed), true
+	return int32PortFromInt(parsed)
 }
 
 func int32FieldDefault(object map[string]interface{}, field string, fallback int32) int32 {

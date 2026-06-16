@@ -3,6 +3,7 @@ package calico
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/netip"
 	"sort"
 	"strings"
@@ -1522,24 +1523,30 @@ func calicoPathPortCandidates(ports []int32, service *corev1.Service, pods []cor
 func portTokenMatches(token interface{}, port calicoPortCandidate) bool {
 	switch value := token.(type) {
 	case int:
-		return port.Number == int32(value)
+		parsed, ok := int32PortFromInt(value)
+		return ok && port.Number == parsed
 	case int32:
 		return port.Number == value
 	case int64:
-		return port.Number == int32(value)
+		parsed, ok := int32PortFromInt64(value)
+		return ok && port.Number == parsed
 	case float64:
-		return port.Number == int32(value)
+		parsed, ok := int32PortFromFloat64(value)
+		return ok && port.Number == parsed
 	case string:
 		var parsed int
 		if _, err := fmt.Sscanf(value, "%d", &parsed); err == nil {
-			return port.Number == int32(parsed)
+			parsedPort, ok := int32PortFromInt(parsed)
+			return ok && port.Number == parsedPort
 		}
 		if strings.Contains(value, ":") {
 			parts := strings.SplitN(value, ":", 2)
 			var start, end int
 			if _, err := fmt.Sscanf(parts[0], "%d", &start); err == nil {
 				if _, err := fmt.Sscanf(parts[1], "%d", &end); err == nil && start <= end {
-					if port.Number >= int32(start) && port.Number <= int32(end) {
+					startPort, startOK := int32PortFromInt(start)
+					endPort, endOK := int32PortFromInt(end)
+					if startOK && endOK && port.Number >= startPort && port.Number <= endPort {
 						return true
 					}
 				}
@@ -1821,15 +1828,36 @@ func numericField(item map[string]interface{}, key string) (int32, bool) {
 	}
 	switch typed := value.(type) {
 	case int:
-		return int32(typed), true
+		return int32PortFromInt(typed)
 	case int32:
 		return typed, true
 	case int64:
-		return int32(typed), true
+		return int32PortFromInt64(typed)
 	case float64:
-		return int32(typed), true
+		return int32PortFromFloat64(typed)
 	}
 	return 0, false
+}
+
+func int32PortFromInt(value int) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
+func int32PortFromInt64(value int64) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
+func int32PortFromFloat64(value float64) (int32, bool) {
+	if value <= 0 || value > 65535 || math.Trunc(value) != value {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func numericFloatField(item map[string]interface{}, key string) (float64, bool) {

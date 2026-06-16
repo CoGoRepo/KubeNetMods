@@ -359,8 +359,7 @@ func describeServicePort(port corev1.ServicePort) string {
 func resolvedTargetPort(port corev1.ServicePort, ports []containerPort) (int32, bool) {
 	switch port.TargetPort.Type {
 	case intstr.Int:
-		value := int32(port.TargetPort.IntValue())
-		return value, value > 0
+		return int32PortFromInt(port.TargetPort.IntValue())
 	case intstr.String:
 		for _, candidate := range ports {
 			if candidate.PortName == port.TargetPort.StrVal && candidate.Port > 0 {
@@ -413,7 +412,8 @@ func targetPortMatches(target intstr.IntOrString, ports []containerPort) bool {
 	for _, port := range ports {
 		switch target.Type {
 		case intstr.Int:
-			if int32(target.IntValue()) == port.Port {
+			targetPort, ok := int32PortFromInt(target.IntValue())
+			if ok && targetPort == port.Port {
 				return true
 			}
 		case intstr.String:

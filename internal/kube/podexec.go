@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,21 @@ import (
 type ExecResult struct {
 	Stdout string
 	Stderr string
+}
+
+const (
+	DebugPodLabelKey   = "app.kubernetes.io/managed-by"
+	DebugPodLabelValue = "kubenetmods"
+	DebugPodRoleKey    = "kubenetmods.dev/debug-pod"
+	DebugPodRoleValue  = "true"
+)
+
+func IsKubeNetModsDebugPod(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	return pod.Labels[DebugPodLabelKey] == DebugPodLabelValue &&
+		pod.Labels[DebugPodRoleKey] == DebugPodRoleValue
 }
 
 func (c *Client) Exec(ctx context.Context, namespace, pod, container string, command []string) (ExecResult, error) {
@@ -45,7 +61,20 @@ func (c *Client) Exec(ctx context.Context, namespace, pod, container string, com
 }
 
 func (c *Client) EnsureDebugPod(ctx context.Context, namespace, name, image, imagePullPolicy string, timeout time.Duration) (*corev1.Pod, error) {
-	_ = c.Core.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("debug pod name cannot be empty")
+	}
+	existing, err := c.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		if !IsKubeNetModsDebugPod(existing) {
+			return nil, fmt.Errorf("refusing to replace pod %s/%s because it is not labeled as a KubeNetMods debug pod", namespace, name)
+		}
+		if err := c.Core.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
 	pullPolicy := corev1.PullIfNotPresent
 	switch imagePullPolicy {
 	case "Always":
@@ -54,7 +83,14 @@ func (c *Client) EnsureDebugPod(ctx context.Context, namespace, name, image, ima
 		pullPolicy = corev1.PullNever
 	}
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				DebugPodLabelKey: DebugPodLabelValue,
+				DebugPodRoleKey:  DebugPodRoleValue,
+			},
+		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
@@ -95,7 +131,17 @@ func (c *Client) EnsureDebugPod(ctx context.Context, namespace, name, image, ima
 }
 
 func (c *Client) DeletePodIfExists(ctx context.Context, namespace, name string) error {
-	err := c.Core.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	pod, err := c.Core.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !IsKubeNetModsDebugPod(pod) {
+		return nil
+	}
+	err = c.Core.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}

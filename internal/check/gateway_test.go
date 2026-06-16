@@ -302,6 +302,51 @@ func TestGatewayScanDiagnosesTLSRouteBackendProblems(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "TLSRoute app/payments rule 1 routes to Service app/payments-api port 443, but that Service has no ready endpoints")
 }
 
+func TestGatewayScanDiagnosesTCPRouteBackendProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "tcp", "istio", true, "True", "True", testGatewayListener("tcp", nil)),
+			testGatewayRouteKind("TCPRoute", "app", "database", "edge", "tcp", []map[string]interface{}{
+				testBackendRef("postgres-api", "", int64(5432)),
+				testBackendRef("redis-api", "", int64(6379)),
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "postgres-api", 5432),
+			testGatewayEndpointSlice("app", "postgres-api", false, "10.0.0.30"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "TCPRoute app/database rule 1 routes to Service app/postgres-api port 5432, but that Service has no ready endpoints")
+	assertGatewayDiagnosisContains(t, report, "TCPRoute app/database rule 1 routes to Service app/redis-api, but that Service is missing or unreadable")
+}
+
+func TestGatewayScanDiagnosesUDPRouteBackendProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "udp", "istio", true, "True", "True", testGatewayListener("udp", nil)),
+			testGatewayRouteKind("UDPRoute", "app", "dns", "edge", "udp", []map[string]interface{}{
+				testBackendRef("dns-api", "", int64(5353)),
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "dns-api", 53),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "UDPRoute app/dns rule 1 routes to Service app/dns-api port 5353, but the Service exposes 53->53/ name=http")
+}
+
 func TestGatewayScanSuppressesRouteBackendProblemsWhenRouteRejected(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
@@ -2312,6 +2357,8 @@ func fakeGatewayClient(t *testing.T, gatewayObjects []unstructured.Unstructured,
 		listenerSetGVR:               "ListenerSetList",
 		referenceGVR:                 "ReferenceGrantList",
 		tlsRouteGVR:                  "TLSRouteList",
+		tcpRouteGVR:                  "TCPRouteList",
+		udpRouteGVR:                  "UDPRouteList",
 		xBackendTrafficPolicyGVR:     "XBackendTrafficPolicyList",
 		envoyBackendTrafficPolicyGVR: "BackendTrafficPolicyList",
 		envoyClientTrafficPolicyGVR:  "ClientTrafficPolicyList",
@@ -2373,6 +2420,10 @@ func gatewayTestGVRForObject(object unstructured.Unstructured) schema.GroupVersi
 		return grpcRouteGVR
 	case "TLSRoute":
 		return tlsRouteGVR
+	case "TCPRoute":
+		return tcpRouteGVR
+	case "UDPRoute":
+		return udpRouteGVR
 	case "ListenerSet":
 		return listenerSetGVR
 	case "BackendTLSPolicy":

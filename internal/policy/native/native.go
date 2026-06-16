@@ -134,12 +134,20 @@ func PortsAllow(policyPorts []networkingv1.NetworkPolicyPort, ports []int32) boo
 			return true
 		}
 		for _, port := range ports {
-			if policyPort.Port.Type == intstr.Int && int32(policyPort.Port.IntValue()) == port {
+			policyPortNumber, ok := int32PortFromInt(policyPort.Port.IntValue())
+			if ok && policyPort.Port.Type == intstr.Int && policyPortNumber == port {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func int32PortFromInt(value int) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func AnyRuleMentionsPort(policies []networkingv1.NetworkPolicy, direction string, ports []int32) bool {

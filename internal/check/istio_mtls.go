@@ -145,8 +145,12 @@ func trafficPolicyTLSMode(policy *networkingapi.TrafficPolicy, servicePort int32
 	if policy == nil {
 		return networkingapi.ClientTLSSettings_DISABLE, false
 	}
+	port, ok := uint32PortFromInt32(servicePort)
+	if !ok {
+		return networkingapi.ClientTLSSettings_DISABLE, false
+	}
 	for _, portPolicy := range policy.GetPortLevelSettings() {
-		if portPolicy.GetPort().GetNumber() == uint32(servicePort) && portPolicy.GetTls() != nil {
+		if portPolicy.GetPort().GetNumber() == port && portPolicy.GetTls() != nil {
 			return portPolicy.GetTls().GetMode(), true
 		}
 	}
@@ -263,13 +267,16 @@ func peerAuthenticationWorkloadPort(service *corev1.Service, servicePort int32) 
 		return 0
 	}
 	if selected.TargetPort.Type == intstr.Int && selected.TargetPort.IntVal > 0 {
-		return uint32(selected.TargetPort.IntVal)
+		port, _ := uint32PortFromInt32(selected.TargetPort.IntVal)
+		return port
 	}
 	if selected.TargetPort.Type == intstr.String && selected.Port > 0 {
-		return uint32(selected.Port)
+		port, _ := uint32PortFromInt32(selected.Port)
+		return port
 	}
 	if selected.Port > 0 {
-		return uint32(selected.Port)
+		port, _ := uint32PortFromInt32(selected.Port)
+		return port
 	}
 	return 0
 }

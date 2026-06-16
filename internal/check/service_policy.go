@@ -268,7 +268,9 @@ func selectedConnectionPortCandidates(service *corev1.Service, containerPorts []
 	}
 	add(selected.Port)
 	if selected.TargetPort.Type == intstr.Int {
-		add(int32(selected.TargetPort.IntValue()))
+		if targetPort, ok := int32PortFromInt(selected.TargetPort.IntValue()); ok {
+			add(targetPort)
+		}
 	} else if selected.TargetPort.Type == intstr.String {
 		for _, port := range containerPorts {
 			if port.PortName == selected.TargetPort.StrVal {

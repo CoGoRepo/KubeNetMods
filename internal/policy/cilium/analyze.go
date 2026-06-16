@@ -1168,11 +1168,15 @@ func ciliumPortProtocolMatches(rule ciliumapi.PortProtocol, ports []ciliumPortCa
 		}
 		return false
 	}
+	startPort, ok := int32PortFromInt(parsed)
+	if !ok {
+		return false
+	}
 	for _, port := range ports {
 		if !ciliumCandidateProtocolMatches(protocol, port) {
 			continue
 		}
-		if int32(parsed) == port.Number || (rule.EndPort > 0 && port.Number >= int32(parsed) && port.Number <= rule.EndPort) {
+		if startPort == port.Number || (rule.EndPort > 0 && port.Number >= startPort && port.Number <= rule.EndPort) {
 			return true
 		}
 	}
@@ -1317,7 +1321,10 @@ func ciliumPathPortCandidates(ports []int32, service *corev1.Service, pods []cor
 					}
 				}
 			} else if servicePort.TargetPort.Type == intstr.Int && servicePort.TargetPort.IntValue() > 0 {
-				target := int32(servicePort.TargetPort.IntValue())
+				target, ok := int32PortFromInt(servicePort.TargetPort.IntValue())
+				if !ok {
+					continue
+				}
 				if selected || containsPortNumber(ports, target) {
 					candidates = appendUniqueCiliumPortCandidate(candidates, ciliumPortCandidate{Number: target, Name: ciliumContainerPortName(pods, target), Protocol: string(servicePort.Protocol)})
 				}
@@ -1606,6 +1613,13 @@ func containsPortNumber(ports []int32, port int32) bool {
 		}
 	}
 	return false
+}
+
+func int32PortFromInt(value int) (int32, bool) {
+	if value <= 0 || value > 65535 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func stringInSlice(value string, values []string) bool {
