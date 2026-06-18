@@ -465,7 +465,7 @@ func TestGatewayScanDiagnosesEnvoyPolicyTargetProblems(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security targets kind Secret app/creds; KNM does not evaluate that target type")
 }
 
-func TestGatewayScanDiagnosesEnvoyPolicyServiceTargetProblems(t *testing.T) {
+func TestGatewayScanDiagnosesEnvoyBackendTrafficPolicyServiceTargetsUnsupported(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
 			testEnvoyPolicy("BackendTrafficPolicy", "app", "traffic", []interface{}{
@@ -482,8 +482,8 @@ func TestGatewayScanDiagnosesEnvoyPolicyServiceTargetProblems(t *testing.T) {
 	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
 
 	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
-	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets Service app/orders-api sectionName \"grpc\", but that Service port name does not exist")
-	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets Service app/payments-api, but that Service is missing or unreadable")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets kind Service app/orders-api; KNM does not evaluate that target type")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets kind Service app/payments-api; KNM does not evaluate that target type")
 }
 
 func TestGatewayScanDiagnosesEnvoyBackendTrafficPolicySemantics(t *testing.T) {
@@ -515,6 +515,241 @@ func TestGatewayScanDiagnosesEnvoyBackendTrafficPolicySemantics(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy edge/traffic targets Gateway edge/public and sets mergeType, but mergeType cannot be used when targeting a Gateway")
 	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy edge/traffic enables requestBuffer for GRPCRoute app/ledger. This is usually only safe for unary gRPC; streaming gRPC can hang or fail")
 	assertGatewayDiagnosisNotContains(t, report, "requestBuffer for GRPCRoute app/ledger")
+}
+
+func TestGatewayScanDiagnosesDenseEnvoyBackendTrafficPolicySemantics(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("eg", "True", "Accepted"),
+			testGateway("edge", "public", "eg", true, "True", "True", testGatewayListener("http", nil)),
+			testGatewayHTTPRoute("app", "catalog", "edge", "public", []map[string]interface{}{
+				{"name": "catalog-api", "port": int64(80)},
+			}, "True", "True"),
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "app", "catalog-traffic", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "catalog"},
+			}, map[string]interface{}{
+				"requestBuffer": map[string]interface{}{"limit": "1Mi"},
+				"faultInjection": map[string]interface{}{
+					"abort": map[string]interface{}{"httpStatus": int64(503), "percentage": float64(100)},
+					"delay": map[string]interface{}{"fixedDelay": "30s", "percentage": float64(25)},
+				},
+				"responseOverride": []interface{}{
+					map[string]interface{}{
+						"match": map[string]interface{}{
+							"statusCodes": []interface{}{
+								map[string]interface{}{"type": "Range", "range": map[string]interface{}{"start": int64(599), "end": int64(500)}},
+							},
+						},
+						"response": map[string]interface{}{"statusCode": int64(502)},
+					},
+				},
+				"circuitBreaker": map[string]interface{}{
+					"maxConnections":     int64(0),
+					"maxParallelRetries": int64(0),
+					"perEndpoint":        map[string]interface{}{"maxConnections": int64(0)},
+					"retryBudget":        map[string]interface{}{"percent": map[string]interface{}{"numerator": int64(0)}},
+				},
+				"rateLimit": map[string]interface{}{
+					"local": map[string]interface{}{
+						"rules": []interface{}{
+							map[string]interface{}{
+								"clientSelectors": []interface{}{
+									map[string]interface{}{
+										"methods": []interface{}{
+											map[string]interface{}{"value": "GET"},
+										},
+									},
+								},
+								"limit": map[string]interface{}{"requests": int64(0), "unit": "Second"},
+							},
+						},
+					},
+				},
+				"retry": map[string]interface{}{
+					"numRetries": int64(0),
+					"retryOn":    map[string]interface{}{"httpStatusCodes": []interface{}{int64(503)}},
+					"perRetry": map[string]interface{}{
+						"timeout": "0s",
+						"backOff": map[string]interface{}{"baseInterval": "5s", "maxInterval": "1s"},
+					},
+				},
+				"healthCheck": map[string]interface{}{
+					"active": map[string]interface{}{
+						"type": "HTTP",
+						"http": map[string]interface{}{"path": "/healthz", "expectedStatuses": []interface{}{int64(500)}},
+						"grpc": map[string]interface{}{"service": "catalog.Catalog"},
+						"tcp": map[string]interface{}{
+							"send": map[string]interface{}{"type": "Text", "text": "ping"},
+						},
+					},
+				},
+				"admissionControl": map[string]interface{}{
+					"maxRejectionPercent": int64(100),
+					"minSuccessRate":      int64(100),
+					"successCriteria": map[string]interface{}{
+						"http": map[string]interface{}{"statusCodes": []interface{}{int64(500)}},
+						"grpc": map[string]interface{}{"statusCodes": []interface{}{"Unavailable"}},
+					},
+				},
+				"bandwidthLimit": map[string]interface{}{
+					"request":  map[string]interface{}{"limit": map[string]interface{}{"value": "0", "unit": "Second"}},
+					"response": map[string]interface{}{"limit": map[string]interface{}{"value": "1", "unit": "Second"}},
+				},
+				"connection": map[string]interface{}{
+					"bufferLimit":       "0",
+					"socketBufferLimit": "0",
+					"preconnect": map[string]interface{}{
+						"predictivePercent":  int64(50),
+						"perEndpointPercent": int64(0),
+					},
+				},
+				"loadBalancer": map[string]interface{}{
+					"type":           "ConsistentHash",
+					"consistentHash": map[string]interface{}{"tableSize": int64(0)},
+					"zoneAware": map[string]interface{}{
+						"weightedZones": []interface{}{
+							map[string]interface{}{"zone": "us-a", "weight": int64(0)},
+						},
+					},
+				},
+				"timeout": map[string]interface{}{
+					"http": map[string]interface{}{
+						"requestTimeout": "1s",
+					},
+					"tcp": map[string]interface{}{"connectTimeout": "0s"},
+				},
+				"http2": map[string]interface{}{
+					"maxConcurrentStreams":        int64(0),
+					"initialConnectionWindowSize": "0",
+					"connectionKeepalive":         map[string]interface{}{"interval": "0s"},
+				},
+				"tcpKeepalive": map[string]interface{}{"probes": int64(0), "interval": "0s"},
+				"routingType":  "Magic",
+				"compressor": []interface{}{
+					map[string]interface{}{"type": "Gzip", "minContentLength": int64(1), "gzip": map[string]interface{}{}, "brotli": map[string]interface{}{}},
+					map[string]interface{}{"type": "Gzip"},
+				},
+				"compression": []interface{}{
+					map[string]interface{}{"type": "Gzip"},
+				},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic aborts 100% of matching traffic with HTTP status 503")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic responseOverride 1 can replace matching responses with HTTP 502")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic responseOverride 1 has an invalid status code range")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic circuitBreaker.maxConnections is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic circuitBreaker.maxParallelRetries is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic circuitBreaker.perEndpoint.maxConnections is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic circuitBreaker.retryBudget.percent.numerator is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic configures rateLimit, but rateLimit.type is missing")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic local rateLimit rule 1 allows 0 requests per Second")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic local rateLimit rule 1 cannot be translated by Envoy Gateway without at least one header or sourceCIDR selector")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic active HTTP healthCheck only treats 5xx status codes as healthy")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic admissionControl can reject up to 100% of matching traffic")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic bandwidthLimit.request.limit.value is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic connection.preconnect.predictivePercent only works with Random or RoundRobin load balancers")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic uses ConsistentHash load balancing without a hash source")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic zoneAware weighted zone 1 has weight 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic http2.maxConcurrentStreams is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic http2.initialConnectionWindowSize is 0")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic sets both compression and compressor")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/catalog-traffic uses unsupported routingType \"Magic\"")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic enables requestBuffer for HTTPRoute app/catalog; streaming requests and protocol upgrades can hang or fail")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic enables requestBuffer without explicit httpUpgrade settings")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic delays 25% of matching traffic by 30s")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic defines retryOn conditions but numRetries is 0")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic sets retry.perRetry.timeout to 0s")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic retry backOff baseInterval 5s is greater than maxInterval 1s")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic admissionControl requires a 100% success rate")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic admissionControl treats HTTP 500 as successful")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic admissionControl treats gRPC status Unavailable as successful")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic connection.bufferLimit is 0")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic timeout.tcp.connectTimeout is 0s")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic configures TCP connectTimeout while targeting HTTPRoute")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic http2.connectionKeepalive.interval is 0s")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic tcpKeepalive.probes is 0")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic compressor 1 minContentLength is below Envoy's 30 byte minimum")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic active healthCheck defines multiple protocol configs")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/catalog-traffic uses deprecated compression")
+}
+
+func TestGatewayScanDiagnosesEnvoyBackendTrafficPolicyRateLimitTypeMismatch(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "app", "traffic", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "catalog"},
+			}, map[string]interface{}{
+				"rateLimit": map[string]interface{}{
+					"type": "Global",
+					"local": map[string]interface{}{
+						"rules": []interface{}{
+							map[string]interface{}{
+								"limit": map[string]interface{}{"requests": int64(1), "unit": "Hour"},
+							},
+						},
+					},
+				},
+			}, "True", "True", "Accepted"),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic sets rateLimit.type=Global, but no global rate limit rules are configured")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic sets rateLimit.type=Global, but the configured rules are under local")
+}
+
+func TestGatewayScanWarnsEnvoyBackendTrafficPolicyTargetSelectors(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("eg", "True", "Accepted"),
+			testGateway("edge", "public", "eg", true, "True", "True", testGatewayListener("http", nil)),
+			withLabels(testGatewayHTTPRoute("app", "catalog", "edge", "public", []map[string]interface{}{
+				{"name": "catalog-api", "port": int64(80)},
+			}, "True", "True"), map[string]string{"app": "catalog"}),
+			testEnvoyObject("BackendTrafficPolicy", "app", "selected-traffic", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"targetSelectors": []interface{}{
+						map[string]interface{}{
+							"group": "gateway.networking.k8s.io",
+							"kind":  "HTTPRoute",
+							"matchLabels": map[string]interface{}{
+								"app": "catalog",
+							},
+						},
+					},
+					"faultInjection": map[string]interface{}{
+						"abort": map[string]interface{}{"httpStatus": int64(500), "percentage": float64(100)},
+					},
+					"requestBuffer": map[string]interface{}{"limit": "1Mi"},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/selected-traffic enables requestBuffer for HTTPRoute app/catalog")
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/selected-traffic aborts 100% of matching traffic with HTTP status 500")
 }
 
 func TestGatewayScanDiagnosesEnvoyClientTrafficPolicyTLSRefs(t *testing.T) {
@@ -3319,6 +3554,11 @@ func gatewayUnstructured(kind, namespace, name string, fields map[string]interfa
 	obj.SetKind(kind)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
+	return obj
+}
+
+func withLabels(obj unstructured.Unstructured, labels map[string]string) unstructured.Unstructured {
+	obj.SetLabels(labels)
 	return obj
 }
 

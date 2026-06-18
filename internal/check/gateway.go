@@ -20,10 +20,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -48,7 +50,7 @@ var (
 	envoyEnvoyPatchPolicyGVR             = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoypatchpolicies"}
 	envoyEnvoyProxyGVR                   = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoyproxies"}
 	envoyHTTPRouteFilterGVR              = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "httproutefilters"}
-	envoyBackendTrafficPolicyTargetKinds = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "Service": true}
+	envoyBackendTrafficPolicyTargetKinds = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "TLSRoute": true, "TCPRoute": true, "UDPRoute": true}
 	envoyClientTrafficPolicyTargetKinds  = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true}
 	envoySecurityPolicyTargetKinds       = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "TCPRoute": true}
 	envoyExtensionPolicyTargetKinds      = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true}
@@ -1177,6 +1179,140 @@ func gatewayPolicyTargetRefText(target gatewayPolicyTargetRef) string {
 	return target.field
 }
 
+func (s *gatewayScanner) gatewayPolicyTargetSelectorRefs(policy unstructured.Unstructured, policyKind, layer string, targets gatewayPolicyTargetIndexes) ([]gatewayPolicyTargetRef, []string) {
+	name := objectRefText(policy)
+	var refs []gatewayPolicyTargetRef
+	var warnings []string
+	for index, raw := range sliceField(policy.Object, "spec", "targetSelectors") {
+		selector, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		group := defaultString(stringField(selector, "group"), gatewayv1.GroupName)
+		kind := stringField(selector, "kind")
+		canonical := gatewayPolicyCanonicalTargetKind(group, kind)
+		objects := gatewayObjectsForPolicySelectorKind(canonical, targets)
+		if canonical == "" || len(objects) == 0 {
+			warnings = append(warnings, fmt.Sprintf("%s %s targetSelector %d targets kind %s; KNM does not evaluate that selector target type.", policyKind, name, index+1, gatewayBackendKindText(group, kind)))
+			continue
+		}
+		namespaceMode := stringField(selector, "namespaces", "from")
+		if namespaceMode == "" {
+			namespaceMode = "Same"
+		}
+		if namespaceMode == "Selector" {
+			warnings = append(warnings, fmt.Sprintf("%s %s targetSelector %d uses namespaces.from=Selector; KNM does not resolve namespace-label selectors yet.", policyKind, name, index+1))
+			continue
+		}
+		labelSelector, err := gatewayLabelSelector(selector)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s %s targetSelector %d has an invalid label selector: %v.", policyKind, name, index+1, err))
+			continue
+		}
+		for _, object := range objects {
+			if namespaceMode == "Same" && object.GetNamespace() != policy.GetNamespace() {
+				continue
+			}
+			if namespaceMode != "Same" && namespaceMode != "All" {
+				warnings = append(warnings, fmt.Sprintf("%s %s targetSelector %d uses unsupported namespaces.from=%q.", policyKind, name, index+1, namespaceMode))
+				break
+			}
+			if !labelSelector.Matches(labels.Set(object.GetLabels())) {
+				continue
+			}
+			refs = append(refs, gatewayPolicyTargetRef{
+				ref: map[string]interface{}{
+					"group":     gatewayv1.GroupName,
+					"kind":      canonical,
+					"name":      object.GetName(),
+					"namespace": object.GetNamespace(),
+				},
+				field:    "targetSelector",
+				position: index + 1,
+			})
+		}
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		left := fmt.Sprintf("%s/%s/%s", stringField(refs[i].ref, "kind"), stringField(refs[i].ref, "namespace"), stringField(refs[i].ref, "name"))
+		right := fmt.Sprintf("%s/%s/%s", stringField(refs[j].ref, "kind"), stringField(refs[j].ref, "namespace"), stringField(refs[j].ref, "name"))
+		return left < right
+	})
+	return refs, warnings
+}
+
+func gatewayObjectsForPolicySelectorKind(kind string, targets gatewayPolicyTargetIndexes) []unstructured.Unstructured {
+	switch kind {
+	case "Gateway":
+		return gatewayIndexValues(targets.Gateways)
+	case "HTTPRoute":
+		return gatewayIndexValues(targets.HTTPRoutes)
+	case "GRPCRoute":
+		return gatewayIndexValues(targets.GRPCRoutes)
+	case "TLSRoute":
+		return gatewayIndexValues(targets.TLSRoutes)
+	case "TCPRoute":
+		return gatewayIndexValues(targets.TCPRoutes)
+	case "UDPRoute":
+		return gatewayIndexValues(targets.UDPRoutes)
+	default:
+		return nil
+	}
+}
+
+func gatewayIndexValues(index map[string]unstructured.Unstructured) []unstructured.Unstructured {
+	values := make([]unstructured.Unstructured, 0, len(index))
+	for _, object := range index {
+		values = append(values, object)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return objectRefText(values[i]) < objectRefText(values[j])
+	})
+	return values
+}
+
+func gatewayLabelSelector(object map[string]interface{}) (labels.Selector, error) {
+	selector := labels.NewSelector()
+	matchLabels, _, _ := unstructured.NestedStringMap(object, "matchLabels")
+	if len(matchLabels) > 0 {
+		selector = labels.SelectorFromSet(matchLabels)
+	}
+	for _, raw := range sliceField(object, "matchExpressions") {
+		expression, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key := stringField(expression, "key")
+		operator := selectionOperator(stringField(expression, "operator"))
+		var values []string
+		for _, rawValue := range sliceField(expression, "values") {
+			if value, ok := rawValue.(string); ok {
+				values = append(values, value)
+			}
+		}
+		requirement, err := labels.NewRequirement(key, operator, values)
+		if err != nil {
+			return labels.Nothing(), err
+		}
+		selector = selector.Add(*requirement)
+	}
+	return selector, nil
+}
+
+func selectionOperator(value string) selection.Operator {
+	switch value {
+	case "In":
+		return selection.In
+	case "NotIn":
+		return selection.NotIn
+	case "Exists":
+		return selection.Exists
+	case "DoesNotExist":
+		return selection.DoesNotExist
+	default:
+		return selection.Operator(value)
+	}
+}
+
 func (s *gatewayScanner) scanGatewayPolicyServiceTargets(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, policyKind, layer string, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
 	name := objectRefText(policy)
 	targetRefs := gatewayPolicyTargetRefs(policy)
@@ -1517,14 +1653,14 @@ func (s gatewayRouteScope) listenerFilter(gateway string) map[string]bool {
 
 func (s *gatewayScanner) scanGatewayPolicyAttachments(ctx context.Context, client *kube.Client, policies []unstructured.Unstructured, policyKind, layer string, allowedKinds map[string]bool, targets gatewayPolicyTargetIndexes, routeScope gatewayRouteScope, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
 	for _, policy := range policies {
-		if routeScope.Active && !gatewayPolicyMatchesRouteScope(policy, routeScope) {
+		if routeScope.Active && !s.gatewayPolicyMatchesRouteScope(policy, policyKind, layer, routeScope, targets) {
 			continue
 		}
 		s.scannedOther++
 		name := objectRefText(policy)
 		s.scanGatewayPolicyTargets(ctx, client, policy, policyKind, layer, allowedKinds, targets, serviceCache, serviceErrCache)
 		if policyKind == "Envoy BackendTrafficPolicy" {
-			s.scanEnvoyBackendTrafficPolicySemantics(policy)
+			s.scanEnvoyBackendTrafficPolicySemantics(policy, targets)
 		}
 		if policyKind == "Envoy ClientTrafficPolicy" {
 			s.scanEnvoyClientTrafficPolicySemantics(ctx, client, policy, refGrants)
@@ -1540,13 +1676,23 @@ func (s *gatewayScanner) scanGatewayPolicyAttachments(ctx context.Context, clien
 	}
 }
 
-func (s *gatewayScanner) scanEnvoyBackendTrafficPolicySemantics(policy unstructured.Unstructured) {
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicySemantics(policy unstructured.Unstructured, targets gatewayPolicyTargetIndexes) {
 	name := objectRefText(policy)
 	spec := mapField(policy.Object, "spec")
 	if len(spec) == 0 {
 		return
 	}
-	for index, targetRef := range gatewayPolicyTargetRefs(policy) {
+	targetRefs := gatewayPolicyTargetRefs(policy)
+	selectedRefs, selectorWarnings := s.gatewayPolicyTargetSelectorRefs(policy, "Envoy BackendTrafficPolicy", "Envoy Gateway Policy Layer", targets)
+	targetRefs = append(targetRefs, selectedRefs...)
+	for _, warning := range selectorWarnings {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" targetSelectors", model.StatusWarn, "unsupported-ref", warning, "")
+	}
+	if len(targetRefs) == 0 && len(sliceField(policy.Object, "spec", "targetSelectors")) > 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" targetSelectors", model.StatusWarn, "unsupported-ref", fmt.Sprintf("Envoy BackendTrafficPolicy %s targetSelectors did not select any supported Gateway API targets.", name), "")
+		return
+	}
+	for index, targetRef := range targetRefs {
 		target := targetRef.ref
 		group := stringField(target, "group")
 		kind := defaultString(stringField(target, "kind"), "Service")
@@ -1560,6 +1706,597 @@ func (s *gatewayScanner) scanEnvoyBackendTrafficPolicySemantics(policy unstructu
 			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d requestBuffer", name, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s enables requestBuffer for GRPCRoute %s/%s. This is usually only safe for unary gRPC; streaming gRPC can hang or fail.", name, namespace, targetName), "")
 		}
 	}
+	s.scanEnvoyBackendTrafficPolicyRequestBuffer(policy, targetRefs)
+	s.scanEnvoyBackendTrafficPolicyFaultInjection(policy)
+	s.scanEnvoyBackendTrafficPolicyResponseOverrides(policy)
+	s.scanEnvoyBackendTrafficPolicyCircuitBreaker(policy)
+	s.scanEnvoyBackendTrafficPolicyRateLimit(policy)
+	s.scanEnvoyBackendTrafficPolicyRetry(policy)
+	s.scanEnvoyBackendTrafficPolicyHealthCheck(policy)
+	s.scanEnvoyBackendTrafficPolicyAdmissionControl(policy, targetRefs)
+	s.scanEnvoyBackendTrafficPolicyBandwidthLimit(policy)
+	s.scanEnvoyBackendTrafficPolicyConnection(policy)
+	s.scanEnvoyBackendTrafficPolicyLoadBalancer(policy)
+	s.scanEnvoyBackendTrafficPolicyTimeout(policy, targetRefs)
+	s.scanEnvoyBackendTrafficPolicyHTTP2(policy)
+	s.scanEnvoyBackendTrafficPolicyTCPKeepalive(policy)
+	s.scanEnvoyBackendTrafficPolicyUseClientProtocol(policy, targetRefs)
+	s.scanEnvoyBackendTrafficPolicyCompressor(policy)
+	s.scanEnvoyBackendTrafficPolicyRoutingType(policy)
+	if len(sliceField(spec, "compression")) > 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" compression", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s uses deprecated compression; use compressor instead.", name), "")
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyRequestBuffer(policy unstructured.Unstructured, targetRefs []gatewayPolicyTargetRef) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	if len(mapField(spec, "requestBuffer")) == 0 {
+		return
+	}
+	if len(sliceField(spec, "httpUpgrade")) == 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" requestBuffer upgrades", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s enables requestBuffer without explicit httpUpgrade settings; request buffering disables default protocol upgrade handling and can break WebSocket-style upgrades.", name), "")
+	}
+	for index, targetRef := range targetRefs {
+		target := targetRef.ref
+		group := stringField(target, "group")
+		kind := defaultString(stringField(target, "kind"), "Service")
+		canonical := gatewayPolicyCanonicalTargetKind(group, kind)
+		if canonical == "Gateway" || canonical == "HTTPRoute" {
+			targetName := defaultString(stringField(target, "name"), "<unnamed>")
+			namespace := defaultString(stringField(target, "namespace"), policy.GetNamespace())
+			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d requestBuffer", name, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s enables requestBuffer for %s %s/%s; streaming requests and protocol upgrades can hang or fail.", name, canonical, namespace, targetName), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyFaultInjection(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	fault := mapField(policy.Object, "spec", "faultInjection")
+	if len(fault) == 0 {
+		return
+	}
+	if abort := mapField(fault, "abort"); len(abort) > 0 {
+		percentage, ok := numberField(abort, "percentage")
+		status := envoyFaultAbortStatus(abort)
+		if ok && percentage >= 100 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s aborts 100%% of matching traffic%s.", name, status)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" fault abort", model.StatusWarn, "conditional-routing", message, message)
+		} else if ok && percentage > 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" fault abort", model.StatusWarn, "conditional-routing", fmt.Sprintf("Envoy BackendTrafficPolicy %s aborts %.3g%% of matching traffic%s.", name, percentage, status), "")
+		}
+	}
+	if delay := mapField(fault, "delay"); len(delay) > 0 {
+		percentage, ok := numberField(delay, "percentage")
+		fixedDelay := stringField(delay, "fixedDelay")
+		if ok && percentage >= 100 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s delays 100%% of matching traffic by %s.", name, defaultString(fixedDelay, "<unspecified duration>"))
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" fault delay", model.StatusWarn, "conditional-routing", message, message)
+		} else if ok && percentage > 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" fault delay", model.StatusWarn, "conditional-routing", fmt.Sprintf("Envoy BackendTrafficPolicy %s delays %.3g%% of matching traffic by %s.", name, percentage, defaultString(fixedDelay, "<unspecified duration>")), "")
+		}
+	}
+}
+
+func envoyFaultAbortStatus(abort map[string]interface{}) string {
+	if status, ok := int64Field(abort, "httpStatus"); ok {
+		return fmt.Sprintf(" with HTTP status %d", status)
+	}
+	if status, ok := int64Field(abort, "grpcStatus"); ok {
+		return fmt.Sprintf(" with gRPC status %d", status)
+	}
+	return ""
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyResponseOverrides(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	for index, raw := range sliceField(policy.Object, "spec", "responseOverride") {
+		override, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		response := mapField(override, "response")
+		status, hasStatus := int64Field(response, "statusCode")
+		if hasStatus && status >= 500 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s responseOverride %d can replace matching responses with HTTP %d.", name, index+1, status)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s responseOverride %d", name, index+1), model.StatusWarn, "conditional-routing", message, message)
+		} else if hasStatus && status >= 400 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s responseOverride %d", name, index+1), model.StatusWarn, "conditional-routing", fmt.Sprintf("Envoy BackendTrafficPolicy %s responseOverride %d can replace matching responses with HTTP %d.", name, index+1, status), "")
+		}
+		for statusIndex, rawStatus := range sliceField(override, "match", "statusCodes") {
+			statusMatch, ok := rawStatus.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if stringField(statusMatch, "type") == "Range" {
+				start, startOK := int64Field(statusMatch, "range", "start")
+				end, endOK := int64Field(statusMatch, "range", "end")
+				if startOK && endOK && start > end {
+					s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s responseOverride %d statusRange %d", name, index+1, statusIndex+1), model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s responseOverride %d has status range start %d greater than end %d.", name, index+1, start, end), fmt.Sprintf("Envoy BackendTrafficPolicy %s responseOverride %d has an invalid status code range.", name, index+1))
+				}
+			}
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyCircuitBreaker(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	cb := mapField(policy.Object, "spec", "circuitBreaker")
+	if len(cb) == 0 {
+		return
+	}
+	for _, field := range []string{"maxConnections", "maxParallelRequests", "maxParallelRetries", "maxPendingRequests", "maxRequestsPerConnection"} {
+		if value, ok := int64Field(cb, field); ok && value == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s circuitBreaker.%s is 0; matching traffic can be rejected by circuit breaking.", name, field)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" circuitBreaker "+field, model.StatusWarn, "policy-ambiguous", message, message)
+		}
+	}
+	if perEndpoint := mapField(cb, "perEndpoint"); len(perEndpoint) > 0 {
+		if value, ok := int64Field(perEndpoint, "maxConnections"); ok && value == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s circuitBreaker.perEndpoint.maxConnections is 0; matching traffic can be rejected by circuit breaking.", name)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" circuitBreaker perEndpoint", model.StatusWarn, "policy-ambiguous", message, message)
+		}
+	}
+	if budget := mapField(cb, "retryBudget"); len(budget) > 0 {
+		if numerator, ok := int64Field(budget, "percent", "numerator"); ok && numerator == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s circuitBreaker.retryBudget.percent.numerator is 0; retries can be disabled by the retry budget.", name)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retryBudget percent", model.StatusWarn, "policy-ambiguous", message, message)
+		}
+		if minRetry, ok := int64Field(budget, "minRetryConcurrency"); ok && minRetry == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retryBudget minRetryConcurrency", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s circuitBreaker.retryBudget.minRetryConcurrency is 0; low-traffic services may get no retry allowance.", name), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyRateLimit(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	rateLimit := mapField(policy.Object, "spec", "rateLimit")
+	if len(rateLimit) == 0 {
+		return
+	}
+	if stringField(rateLimit, "type") == "" {
+		s.addProblem("Envoy Gateway Policy Layer", name+" rateLimit type", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s configures rateLimit but has no spec.rateLimit.type.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s configures rateLimit, but rateLimit.type is missing.", name))
+	}
+	rateLimitType := stringField(rateLimit, "type")
+	globalRules := sliceField(rateLimit, "global", "rules")
+	localRules := sliceField(rateLimit, "local", "rules")
+	if rateLimitType == "Global" && len(globalRules) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" rateLimit global", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Global but has no global rules.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Global, but no global rate limit rules are configured.", name))
+	}
+	if rateLimitType == "Local" && len(localRules) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" rateLimit local", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Local but has no local rules.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Local, but no local rate limit rules are configured.", name))
+	}
+	if rateLimitType == "Global" && len(localRules) > 0 && len(globalRules) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" rateLimit local", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Global but only local rules are configured.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Global, but the configured rules are under local.", name))
+	}
+	if rateLimitType == "Local" && len(globalRules) > 0 && len(localRules) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" rateLimit global", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Local but only global rules are configured.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s sets rateLimit.type=Local, but the configured rules are under global.", name))
+	}
+	for scope, rules := range map[string][]interface{}{
+		"global": globalRules,
+		"local":  localRules,
+	} {
+		for index, raw := range rules {
+			rule, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			limit := mapField(rule, "limit")
+			requests, hasRequests := int64Field(limit, "requests")
+			shadow, _ := rule["shadowMode"].(bool)
+			if hasRequests && requests == 0 && !shadow {
+				message := fmt.Sprintf("Envoy BackendTrafficPolicy %s %s rateLimit rule %d allows 0 requests per %s; matching traffic can be rate-limited immediately.", name, scope, index+1, defaultString(stringField(limit, "unit"), "unit"))
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s rateLimit rule %d", name, scope, index+1), model.StatusWarn, "conditional-routing", message, message)
+			}
+			if len(sliceField(rule, "clientSelectors")) > 0 && !envoyRateLimitRuleHasHeaderOrSourceCIDR(rule) {
+				message := fmt.Sprintf("Envoy BackendTrafficPolicy %s %s rateLimit rule %d has clientSelectors but no header or sourceCIDR selector.", name, scope, index+1)
+				s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s rateLimit rule %d selectors", name, scope, index+1), model.StatusFail, message, fmt.Sprintf("Envoy BackendTrafficPolicy %s %s rateLimit rule %d cannot be translated by Envoy Gateway without at least one header or sourceCIDR selector.", name, scope, index+1))
+			}
+		}
+	}
+}
+
+func envoyRateLimitRuleHasHeaderOrSourceCIDR(rule map[string]interface{}) bool {
+	for _, raw := range sliceField(rule, "clientSelectors") {
+		selector, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if len(sliceField(selector, "headers")) > 0 || len(mapField(selector, "sourceCIDR")) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyHealthCheck(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	active := mapField(policy.Object, "spec", "healthCheck", "active")
+	if len(active) == 0 {
+		return
+	}
+	checkType := stringField(active, "type")
+	if checkType == "" {
+		s.addProblem("Envoy Gateway Policy Layer", name+" healthCheck type", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s active healthCheck has no type.", name), fmt.Sprintf("Envoy BackendTrafficPolicy %s active healthCheck has no type.", name))
+		return
+	}
+	protocolConfigs := map[string]bool{
+		"HTTP": len(mapField(active, "http")) > 0,
+		"GRPC": len(mapField(active, "grpc")) > 0,
+		"TCP":  len(mapField(active, "tcp")) > 0,
+	}
+	if expected, ok := protocolConfigs[checkType]; ok && !expected {
+		s.addProblem("Envoy Gateway Policy Layer", name+" healthCheck "+checkType, model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s active healthCheck type %s has no matching %s config.", name, checkType, strings.ToLower(checkType)), fmt.Sprintf("Envoy BackendTrafficPolicy %s active healthCheck type is %s, but the matching config is missing.", name, checkType))
+	}
+	configCount := 0
+	for _, present := range protocolConfigs {
+		if present {
+			configCount++
+		}
+	}
+	if configCount > 1 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" healthCheck protocols", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s active healthCheck defines multiple protocol configs; type %s controls which one is used.", name, checkType), "")
+	}
+	s.scanEnvoyBackendTrafficPolicyHealthCheckHTTPStatuses(policy, active)
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyHealthCheckHTTPStatuses(policy unstructured.Unstructured, active map[string]interface{}) {
+	name := objectRefText(policy)
+	statuses := sliceField(active, "http", "expectedStatuses")
+	if len(statuses) == 0 {
+		return
+	}
+	hasSuccess := false
+	hasOnlyErrors := true
+	for _, raw := range statuses {
+		status, ok := int64Value(raw)
+		if !ok {
+			continue
+		}
+		if status >= 200 && status < 400 {
+			hasSuccess = true
+		}
+		if status < 500 {
+			hasOnlyErrors = false
+		}
+	}
+	if hasOnlyErrors {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s active HTTP healthCheck only treats 5xx status codes as healthy.", name)
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" healthCheck expectedStatuses", model.StatusWarn, "policy-ambiguous", message, message)
+		return
+	}
+	if !hasSuccess {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" healthCheck expectedStatuses", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s active HTTP healthCheck expectedStatuses has no 2xx/3xx success status.", name), "")
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyRoutingType(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	routingType := stringField(policy.Object, "spec", "routingType")
+	if routingType == "" {
+		return
+	}
+	if routingType != "Service" && routingType != "Endpoint" {
+		s.addProblem("Envoy Gateway Policy Layer", name+" routingType", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s uses unsupported routingType %q.", name, routingType), fmt.Sprintf("Envoy BackendTrafficPolicy %s uses unsupported routingType %q.", name, routingType))
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyRetry(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	retry := mapField(policy.Object, "spec", "retry")
+	if len(retry) == 0 {
+		return
+	}
+	if retries, ok := int64Field(retry, "numRetries"); ok && retries == 0 && len(mapField(retry, "retryOn")) > 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retry", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s defines retryOn conditions but numRetries is 0, so matching requests will not be retried.", name), "")
+	}
+	if timeout := stringField(retry, "perRetry", "timeout"); timeout != "" {
+		if duration, ok := parseGatewayDuration(timeout); ok && duration == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retry timeout", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s sets retry.perRetry.timeout to 0s; retry attempts can time out immediately.", name), "")
+		}
+	}
+	if base := stringField(retry, "perRetry", "backOff", "baseInterval"); base != "" {
+		if max := stringField(retry, "perRetry", "backOff", "maxInterval"); max != "" {
+			if baseDuration, baseOK := parseGatewayDuration(base); baseOK {
+				if maxDuration, maxOK := parseGatewayDuration(max); maxOK && baseDuration > maxDuration {
+					message := fmt.Sprintf("Envoy BackendTrafficPolicy %s retry backOff baseInterval %s is greater than maxInterval %s.", name, base, max)
+					s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retry backOff", model.StatusWarn, "policy-ambiguous", message, message)
+				}
+			}
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyAdmissionControl(policy unstructured.Unstructured, targetRefs []gatewayPolicyTargetRef) {
+	name := objectRefText(policy)
+	admission := mapField(policy.Object, "spec", "admissionControl")
+	if len(admission) == 0 {
+		return
+	}
+	for index, targetRef := range targetRefs {
+		target := targetRef.ref
+		kind := gatewayPolicyCanonicalTargetKind(stringField(target, "group"), defaultString(stringField(target, "kind"), "Service"))
+		if kind != "Gateway" && kind != "HTTPRoute" && kind != "GRPCRoute" {
+			targetName := defaultString(stringField(target, "name"), "<unnamed>")
+			namespace := defaultString(stringField(target, "namespace"), policy.GetNamespace())
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s uses admissionControl on %s %s/%s, but admissionControl only applies to Gateway, HTTPRoute, or GRPCRoute targets.", name, kind, namespace, targetName)
+			s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d admissionControl", name, index+1), model.StatusFail, message, message)
+		}
+	}
+	if percent, ok := int64Field(admission, "maxRejectionPercent"); ok && percent == 100 {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s admissionControl can reject up to 100%% of matching traffic.", name)
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" admissionControl maxRejectionPercent", model.StatusWarn, "conditional-routing", message, message)
+	}
+	if minSuccess, ok := int64Field(admission, "minSuccessRate"); ok && minSuccess == 100 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" admissionControl minSuccessRate", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s admissionControl requires a 100%% success rate before avoiding rejection.", name), "")
+	}
+	if window := stringField(admission, "samplingWindow"); window != "" {
+		if duration, ok := parseGatewayDuration(window); ok && duration < time.Second {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s admissionControl samplingWindow %s is shorter than 1s.", name, window)
+			s.addProblem("Envoy Gateway Policy Layer", name+" admissionControl samplingWindow", model.StatusFail, message, message)
+		}
+	}
+	for _, status := range sliceField(admission, "successCriteria", "http", "statusCodes") {
+		if code, ok := int64Value(status); ok && code >= 500 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" admissionControl http successCriteria", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s admissionControl treats HTTP %d as successful.", name, code), "")
+		}
+	}
+	for _, raw := range sliceField(admission, "successCriteria", "grpc", "statusCodes") {
+		code, _ := raw.(string)
+		if code != "" && code != "Ok" {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" admissionControl grpc successCriteria", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s admissionControl treats gRPC status %s as successful.", name, code), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyBandwidthLimit(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	bandwidth := mapField(policy.Object, "spec", "bandwidthLimit")
+	if len(bandwidth) == 0 {
+		return
+	}
+	if len(mapField(bandwidth, "request")) == 0 && len(mapField(bandwidth, "response")) == 0 {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s bandwidthLimit has neither request nor response limits.", name)
+		s.addProblem("Envoy Gateway Policy Layer", name+" bandwidthLimit", model.StatusFail, message, message)
+	}
+	for _, direction := range []string{"request", "response"} {
+		limit := mapField(bandwidth, direction, "limit")
+		if len(limit) == 0 {
+			continue
+		}
+		value := limit["value"]
+		if isZeroGatewayQuantity(value) {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s bandwidthLimit.%s.limit.value is 0; matching traffic can stall.", name, direction)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" bandwidthLimit "+direction, model.StatusWarn, "conditional-routing", message, message)
+		}
+		if stringField(limit, "unit") == "" {
+			s.addProblem("Envoy Gateway Policy Layer", name+" bandwidthLimit "+direction+" unit", model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s bandwidthLimit.%s.limit has no unit.", name, direction), fmt.Sprintf("Envoy BackendTrafficPolicy %s bandwidthLimit.%s.limit unit is missing.", name, direction))
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyConnection(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	connection := mapField(policy.Object, "spec", "connection")
+	if len(connection) == 0 {
+		return
+	}
+	for _, field := range []string{"bufferLimit", "socketBufferLimit"} {
+		if isZeroGatewayQuantity(connection[field]) {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s connection.%s is 0; backend connections may be unable to buffer traffic.", name, field)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" connection "+field, model.StatusWarn, "policy-ambiguous", message, message)
+		}
+	}
+	preconnect := mapField(connection, "preconnect")
+	if len(preconnect) == 0 {
+		return
+	}
+	loadBalancerType := stringField(policy.Object, "spec", "loadBalancer", "type")
+	if _, ok := int64Field(preconnect, "predictivePercent"); ok && loadBalancerType != "Random" && loadBalancerType != "RoundRobin" {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s connection.preconnect.predictivePercent only works with Random or RoundRobin load balancers.", name)
+		s.addProblem("Envoy Gateway Policy Layer", name+" preconnect predictivePercent", model.StatusFail, message, message)
+	}
+	for _, field := range []string{"perEndpointPercent", "predictivePercent"} {
+		if value, ok := int64Field(preconnect, field); ok && value == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" preconnect "+field, model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s connection.preconnect.%s is 0; preconnect will not open extra backend connections.", name, field), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyLoadBalancer(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	lb := mapField(policy.Object, "spec", "loadBalancer")
+	if len(lb) == 0 {
+		return
+	}
+	lbType := stringField(lb, "type")
+	if lbType == "ConsistentHash" {
+		hash := mapField(lb, "consistentHash")
+		configured := 0
+		for _, present := range []bool{
+			len(mapField(hash, "cookie")) > 0,
+			len(mapField(hash, "header")) > 0,
+			len(sliceField(hash, "headers")) > 0,
+			len(sliceField(hash, "queryParams")) > 0,
+			stringField(hash, "type") == "SourceIP",
+		} {
+			if present {
+				configured++
+			}
+		}
+		if len(hash) == 0 || configured == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s uses ConsistentHash load balancing without a hash source.", name)
+			s.addProblem("Envoy Gateway Policy Layer", name+" loadBalancer consistentHash", model.StatusFail, message, message)
+		}
+		if tableSize, ok := int64Field(hash, "tableSize"); ok && tableSize == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" loadBalancer tableSize", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s consistentHash.tableSize is 0; consistent hash distribution may be unusable.", name), "")
+		}
+		if configured > 1 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" loadBalancer hash sources", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s consistentHash defines multiple hash sources; only the selected source type is used.", name), "")
+		}
+	}
+	if lbType != "ConsistentHash" && len(mapField(lb, "consistentHash")) > 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" loadBalancer consistentHash", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s defines consistentHash settings but loadBalancer.type is %q.", name, lbType), "")
+	}
+	if lbType != "LeastRequest" && len(mapField(lb, "slowStart")) > 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" loadBalancer slowStart", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s defines slowStart while loadBalancer.type is %q.", name, lbType), "")
+	}
+	for index, raw := range sliceField(lb, "zoneAware", "weightedZones") {
+		zone, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if weight, ok := int64Field(zone, "weight"); ok && weight == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s zoneAware weighted zone %d has weight 0.", name, index+1)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s zoneAware weightedZone %d", name, index+1), model.StatusWarn, "conditional-routing", message, message)
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyTimeout(policy unstructured.Unstructured, targetRefs []gatewayPolicyTargetRef) {
+	name := objectRefText(policy)
+	timeoutSpec := mapField(policy.Object, "spec", "timeout")
+	if len(timeoutSpec) == 0 {
+		return
+	}
+	httpTimeout := mapField(timeoutSpec, "http")
+	tcpTimeout := mapField(timeoutSpec, "tcp")
+	for _, field := range []string{"requestTimeout", "streamIdleTimeout", "connectionIdleTimeout", "maxConnectionDuration", "maxStreamDuration"} {
+		value := stringField(httpTimeout, field)
+		if value == "" {
+			continue
+		}
+		if duration, ok := parseGatewayDuration(value); ok && duration == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" timeout http "+field, model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s timeout.http.%s is 0s.", name, field), "")
+		}
+	}
+	if requestTimeout, requestOK := parseGatewayDuration(stringField(httpTimeout, "requestTimeout")); requestOK && requestTimeout > 0 {
+		if perRetry, retryOK := parseGatewayDuration(stringField(policy.Object, "spec", "retry", "perRetry", "timeout")); retryOK && perRetry > requestTimeout {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s retry.perRetry.timeout is greater than timeout.http.requestTimeout.", name)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" retry timeout budget", model.StatusWarn, "policy-ambiguous", message, message)
+		}
+	}
+	if value := stringField(tcpTimeout, "connectTimeout"); value != "" {
+		if duration, ok := parseGatewayDuration(value); ok && duration == 0 {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s timeout.tcp.connectTimeout is 0s; backend TCP/TLS connection attempts can fail immediately.", name)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" timeout tcp connectTimeout", model.StatusWarn, "policy-ambiguous", message, message)
+		}
+	}
+	for _, targetRef := range targetRefs {
+		kind := gatewayPolicyCanonicalTargetKind(stringField(targetRef.ref, "group"), defaultString(stringField(targetRef.ref, "kind"), "Service"))
+		if kind == "TCPRoute" && len(httpTimeout) > 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" timeout http target", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s configures HTTP timeouts while targeting TCPRoute.", name), "")
+		}
+		if (kind == "HTTPRoute" || kind == "GRPCRoute") && len(tcpTimeout) > 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" timeout tcp target", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s configures TCP connectTimeout while targeting %s.", name, kind), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyHTTP2(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	http2 := mapField(policy.Object, "spec", "http2")
+	if len(http2) == 0 {
+		return
+	}
+	if streams, ok := int64Field(http2, "maxConcurrentStreams"); ok && streams == 0 {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s http2.maxConcurrentStreams is 0; HTTP/2 streams can be blocked.", name)
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" http2 maxConcurrentStreams", model.StatusWarn, "conditional-routing", message, message)
+	}
+	for _, field := range []string{"initialConnectionWindowSize", "initialStreamWindowSize"} {
+		if isZeroGatewayQuantity(http2[field]) {
+			message := fmt.Sprintf("Envoy BackendTrafficPolicy %s http2.%s is 0; HTTP/2 flow-control windows can block traffic.", name, field)
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" http2 "+field, model.StatusWarn, "conditional-routing", message, message)
+		}
+	}
+	keepalive := mapField(http2, "connectionKeepalive")
+	for _, field := range []string{"interval", "timeout", "idleInterval"} {
+		value := stringField(keepalive, field)
+		if value == "" {
+			continue
+		}
+		if duration, ok := parseGatewayDuration(value); ok && duration == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" http2 keepalive "+field, model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s http2.connectionKeepalive.%s is 0s.", name, field), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyTCPKeepalive(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	keepalive := mapField(policy.Object, "spec", "tcpKeepalive")
+	if len(keepalive) == 0 {
+		return
+	}
+	if probes, ok := int64Field(keepalive, "probes"); ok && probes == 0 {
+		s.addProblemCategorized("Envoy Gateway Policy Layer", name+" tcpKeepalive probes", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s tcpKeepalive.probes is 0; keepalive failure detection may not work as intended.", name), "")
+	}
+	for _, field := range []string{"idleTime", "interval"} {
+		value := stringField(keepalive, field)
+		if value == "" {
+			continue
+		}
+		if duration, ok := parseGatewayDuration(value); ok && duration == 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" tcpKeepalive "+field, model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s tcpKeepalive.%s is 0s.", name, field), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyUseClientProtocol(policy unstructured.Unstructured, targetRefs []gatewayPolicyTargetRef) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	enabled, ok := spec["useClientProtocol"].(bool)
+	if !ok || !enabled {
+		return
+	}
+	for _, targetRef := range targetRefs {
+		kind := gatewayPolicyCanonicalTargetKind(stringField(targetRef.ref, "group"), defaultString(stringField(targetRef.ref, "kind"), "Service"))
+		if kind == "TCPRoute" || kind == "UDPRoute" || kind == "TLSRoute" {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" useClientProtocol target", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s enables useClientProtocol while targeting %s; this setting is only meaningful for HTTP backends.", name, kind), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicyCompressor(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	compressor := sliceField(spec, "compressor")
+	compression := sliceField(spec, "compression")
+	if len(compressor) > 0 && len(compression) > 0 {
+		message := fmt.Sprintf("Envoy BackendTrafficPolicy %s sets both compression and compressor.", name)
+		s.addProblem("Envoy Gateway Policy Layer", name+" compressor conflict", model.StatusFail, message, message)
+	}
+	scanCompressor := func(field string, items []interface{}) {
+		seen := map[string]bool{}
+		for index, raw := range items {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			compressorType := stringField(item, "type")
+			if compressorType == "" {
+				s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s %d type", name, field, index+1), model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s %s %d has no type.", name, field, index+1), fmt.Sprintf("Envoy BackendTrafficPolicy %s %s %d type is missing.", name, field, index+1))
+				continue
+			}
+			if seen[compressorType] {
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s %d duplicate", name, field, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s %s lists %s more than once; first matching compressor order wins.", name, field, compressorType), "")
+			}
+			seen[compressorType] = true
+			if isTinyGatewayQuantity(item["minContentLength"], 30) {
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s %d minContentLength", name, field, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s %s %d minContentLength is below Envoy's 30 byte minimum.", name, field, index+1), "")
+			}
+			configs := 0
+			for _, configField := range []string{"gzip", "brotli", "zstd"} {
+				if len(mapField(item, configField)) > 0 {
+					configs++
+				}
+			}
+			if configs > 1 {
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s %s %d configs", name, field, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s %s %d defines multiple compressor config blocks; type %s controls which one is used.", name, field, index+1, compressorType), "")
+			}
+		}
+	}
+	scanCompressor("compressor", compressor)
+	scanCompressor("compression", compression)
 }
 
 func (s *gatewayScanner) scanEnvoyClientTrafficPolicySemantics(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, refGrants []unstructured.Unstructured) {
@@ -2011,10 +2748,14 @@ func (s *gatewayScanner) scanGatewayPolicyAncestorStatus(policy unstructured.Uns
 			continue
 		}
 		check := fmt.Sprintf("%s ancestor %d", name, index+1)
-		for _, rule := range []gatewayConditionRule{
+		rules := []gatewayConditionRule{
 			{Type: "Accepted", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
 			{Type: "ResolvedRefs", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
-		} {
+		}
+		if policyKind == "Envoy BackendTrafficPolicy" {
+			rules[1].MissingStatus = ""
+		}
+		for _, rule := range rules {
 			cond, ok := conditionByType(ancestor, rule.Type)
 			if !ok {
 				if rule.MissingStatus != "" {
@@ -4958,8 +5699,14 @@ func gatewayHTTPRouteFilterRefs(route unstructured.Unstructured) []string {
 	return out
 }
 
-func gatewayPolicyMatchesRouteScope(policy unstructured.Unstructured, scope gatewayRouteScope) bool {
-	for _, targetRef := range gatewayPolicyTargetRefs(policy) {
+func (s *gatewayScanner) gatewayPolicyMatchesRouteScope(policy unstructured.Unstructured, policyKind, layer string, scope gatewayRouteScope, targets gatewayPolicyTargetIndexes) bool {
+	targetRefs := gatewayPolicyTargetRefs(policy)
+	selectedRefs, selectorWarnings := s.gatewayPolicyTargetSelectorRefs(policy, policyKind, layer, targets)
+	if len(targetRefs) == 0 && len(selectedRefs) == 0 && len(selectorWarnings) > 0 {
+		return true
+	}
+	targetRefs = append(targetRefs, selectedRefs...)
+	for _, targetRef := range targetRefs {
 		target := targetRef.ref
 		group := stringField(target, "group")
 		kind := defaultString(stringField(target, "kind"), "Service")
@@ -5252,6 +5999,92 @@ func int64FieldDefault(object map[string]interface{}, field string, fallback int
 		return fallback
 	}
 	return value
+}
+
+func int64Field(object map[string]interface{}, fields ...string) (int64, bool) {
+	value, ok, _ := unstructured.NestedInt64(object, fields...)
+	return value, ok
+}
+
+func numberField(object map[string]interface{}, fields ...string) (float64, bool) {
+	if value, ok, _ := unstructured.NestedFloat64(object, fields...); ok {
+		return value, true
+	}
+	if value, ok, _ := unstructured.NestedInt64(object, fields...); ok {
+		return float64(value), true
+	}
+	return 0, false
+}
+
+func int64Value(value interface{}) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case float64:
+		if typed == float64(int64(typed)) {
+			return int64(typed), true
+		}
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func parseGatewayDuration(value string) (time.Duration, bool) {
+	if value == "" {
+		return 0, false
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, false
+	}
+	return duration, true
+}
+
+func isZeroGatewayQuantity(value interface{}) bool {
+	if value == nil {
+		return false
+	}
+	if number, ok := int64Value(value); ok {
+		return number == 0
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return false
+	}
+	quantity, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return false
+	}
+	return quantity.IsZero()
+}
+
+func isTinyGatewayQuantity(value interface{}, minimumBytes int64) bool {
+	if value == nil {
+		return false
+	}
+	if number, ok := int64Value(value); ok {
+		return number > 0 && number < minimumBytes
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return false
+	}
+	quantity, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return false
+	}
+	if quantity.Sign() <= 0 {
+		return false
+	}
+	return quantity.Cmp(*resource.NewQuantity(minimumBytes, resource.BinarySI)) < 0
 }
 
 func sliceField(object map[string]interface{}, fields ...string) []interface{} {
