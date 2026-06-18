@@ -40,13 +40,17 @@ var (
 	udpRouteGVR         = schema.GroupVersionResource{Group: gatewayv1.GroupName, Version: "v1alpha2", Resource: "udproutes"}
 
 	xBackendTrafficPolicyGVR             = schema.GroupVersionResource{Group: "gateway.networking.x-k8s.io", Version: "v1alpha1", Resource: "xbackendtrafficpolicies"}
+	envoyBackendGVR                      = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "backends"}
 	envoyBackendTrafficPolicyGVR         = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "backendtrafficpolicies"}
 	envoyClientTrafficPolicyGVR          = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "clienttrafficpolicies"}
 	envoySecurityPolicyGVR               = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "securitypolicies"}
 	envoyEnvoyExtensionPolicyGVR         = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoyextensionpolicies"}
+	envoyEnvoyPatchPolicyGVR             = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoypatchpolicies"}
+	envoyEnvoyProxyGVR                   = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoyproxies"}
+	envoyHTTPRouteFilterGVR              = schema.GroupVersionResource{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "httproutefilters"}
 	envoyBackendTrafficPolicyTargetKinds = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "Service": true}
 	envoyClientTrafficPolicyTargetKinds  = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true}
-	envoySecurityPolicyTargetKinds       = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true}
+	envoySecurityPolicyTargetKinds       = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true, "TCPRoute": true}
 	envoyExtensionPolicyTargetKinds      = map[string]bool{"Gateway": true, "HTTPRoute": true, "GRPCRoute": true}
 )
 
@@ -178,17 +182,21 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	listenerSets, listenerSetErr := gatewayList(ctx, client, listenerSetGVR, namespace)
 	backendTLSPolicies, backendTLSPolicyErr := gatewayList(ctx, client, backendTLSPolicyGVR, namespace)
 	xBackendTrafficPolicies, xBackendTrafficPolicyErr := gatewayList(ctx, client, xBackendTrafficPolicyGVR, namespace)
+	envoyBackends, envoyBackendErr := gatewayList(ctx, client, envoyBackendGVR, namespace)
 	envoyBackendTrafficPolicies, envoyBackendTrafficPolicyErr := gatewayList(ctx, client, envoyBackendTrafficPolicyGVR, namespace)
 	envoyClientTrafficPolicies, envoyClientTrafficPolicyErr := gatewayList(ctx, client, envoyClientTrafficPolicyGVR, namespace)
 	envoySecurityPolicies, envoySecurityPolicyErr := gatewayList(ctx, client, envoySecurityPolicyGVR, namespace)
 	envoyExtensionPolicies, envoyExtensionPolicyErr := gatewayList(ctx, client, envoyEnvoyExtensionPolicyGVR, namespace)
+	envoyPatchPolicies, envoyPatchPolicyErr := gatewayList(ctx, client, envoyEnvoyPatchPolicyGVR, namespace)
+	envoyProxies, envoyProxyErr := gatewayList(ctx, client, envoyEnvoyProxyGVR, namespace)
+	envoyHTTPRouteFilters, envoyHTTPRouteFilterErr := gatewayList(ctx, client, envoyHTTPRouteFilterGVR, namespace)
 	refGrants, refGrantErr := gatewayList(ctx, client, referenceGVR, metav1.NamespaceAll)
 
 	if gatewayAPIMissing(classErr) && gatewayAPIMissing(gatewayErr) && gatewayAPIMissing(routeErr) && gatewayAPIMissing(parentGatewayErr) &&
 		gatewayAPIMissing(grpcRouteErr) && gatewayAPIMissing(tlsRouteErr) && gatewayAPIMissing(tcpRouteErr) && gatewayAPIMissing(udpRouteErr) &&
 		gatewayAPIMissing(listenerSetErr) && gatewayAPIMissing(backendTLSPolicyErr) &&
-		gatewayAPIMissing(xBackendTrafficPolicyErr) && gatewayAPIMissing(envoyBackendTrafficPolicyErr) && gatewayAPIMissing(envoyClientTrafficPolicyErr) &&
-		gatewayAPIMissing(envoySecurityPolicyErr) && gatewayAPIMissing(envoyExtensionPolicyErr) {
+		gatewayAPIMissing(xBackendTrafficPolicyErr) && gatewayAPIMissing(envoyBackendErr) && gatewayAPIMissing(envoyBackendTrafficPolicyErr) && gatewayAPIMissing(envoyClientTrafficPolicyErr) &&
+		gatewayAPIMissing(envoySecurityPolicyErr) && gatewayAPIMissing(envoyExtensionPolicyErr) && gatewayAPIMissing(envoyPatchPolicyErr) && gatewayAPIMissing(envoyProxyErr) && gatewayAPIMissing(envoyHTTPRouteFilterErr) {
 		report.Add("Gateway API Access", "v1 resources", model.StatusInfo, "Gateway API v1 resources were not found in this cluster.")
 		return
 	}
@@ -225,6 +233,9 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	if xBackendTrafficPolicyErr != nil && !gatewayAPIMissing(xBackendTrafficPolicyErr) {
 		scanner.addProblemCategorized("Gateway API Access", "XBackendTrafficPolicy list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list XBackendTrafficPolicy objects: %v", xBackendTrafficPolicyErr), "")
 	}
+	if envoyBackendErr != nil && !gatewayAPIMissing(envoyBackendErr) {
+		scanner.addProblemCategorized("Gateway API Access", "Envoy Backend list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy Backend objects: %v", envoyBackendErr), "")
+	}
 	if envoyBackendTrafficPolicyErr != nil && !gatewayAPIMissing(envoyBackendTrafficPolicyErr) {
 		scanner.addProblemCategorized("Gateway API Access", "Envoy BackendTrafficPolicy list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy BackendTrafficPolicy objects: %v", envoyBackendTrafficPolicyErr), "")
 	}
@@ -236,6 +247,15 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	}
 	if envoyExtensionPolicyErr != nil && !gatewayAPIMissing(envoyExtensionPolicyErr) {
 		scanner.addProblemCategorized("Gateway API Access", "Envoy EnvoyExtensionPolicy list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy EnvoyExtensionPolicy objects: %v", envoyExtensionPolicyErr), "")
+	}
+	if envoyPatchPolicyErr != nil && !gatewayAPIMissing(envoyPatchPolicyErr) {
+		scanner.addProblemCategorized("Gateway API Access", "Envoy EnvoyPatchPolicy list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy EnvoyPatchPolicy objects: %v", envoyPatchPolicyErr), "")
+	}
+	if envoyProxyErr != nil && !gatewayAPIMissing(envoyProxyErr) {
+		scanner.addProblemCategorized("Gateway API Access", "Envoy EnvoyProxy list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy EnvoyProxy objects: %v", envoyProxyErr), "")
+	}
+	if envoyHTTPRouteFilterErr != nil && !gatewayAPIMissing(envoyHTTPRouteFilterErr) {
+		scanner.addProblemCategorized("Gateway API Access", "Envoy HTTPRouteFilter list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list Envoy HTTPRouteFilter objects: %v", envoyHTTPRouteFilterErr), "")
 	}
 	if refGrantErr != nil && !gatewayAPIMissing(refGrantErr) {
 		scanner.addProblemCategorized("Gateway API Access", "ReferenceGrant list", model.StatusWarn, "api-inspection", fmt.Sprintf("Could not list ReferenceGrant objects: %v", refGrantErr), "")
@@ -251,10 +271,14 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	gatewaySortObjects(listenerSets)
 	gatewaySortObjects(backendTLSPolicies)
 	gatewaySortObjects(xBackendTrafficPolicies)
+	gatewaySortObjects(envoyBackends)
 	gatewaySortObjects(envoyBackendTrafficPolicies)
 	gatewaySortObjects(envoyClientTrafficPolicies)
 	gatewaySortObjects(envoySecurityPolicies)
 	gatewaySortObjects(envoyExtensionPolicies)
+	gatewaySortObjects(envoyPatchPolicies)
+	gatewaySortObjects(envoyProxies)
+	gatewaySortObjects(envoyHTTPRouteFilters)
 	gatewaySortObjects(refGrants)
 
 	var classIndex map[string]unstructured.Unstructured
@@ -265,7 +289,7 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	serviceErrCache := map[string]error{}
 	endpointReadyCache := map[string]int{}
 	endpointErrCache := map[string]error{}
-	routeParentFilter := gatewayParentsForRouteFilter(routes, opts)
+	routeScope := gatewayRouteScopeForRouteFilter(routes, grpcRoutes, tlsRoutes, tcpRoutes, udpRoutes, opts)
 
 	if intentMode {
 		intentRoutes := routes
@@ -282,7 +306,7 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	}
 
 	scanner.scanGatewayClasses(classes)
-	scanner.scanGateways(ctx, client, gateways, classIndex, refGrants, routeParentFilter, endpointReadyCache, endpointErrCache)
+	scanner.scanGateways(ctx, client, gateways, classIndex, refGrants, routeScope, endpointReadyCache, endpointErrCache)
 	scanner.scanHTTPRoutes(ctx, client, routes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanGenericRoutes(ctx, client, "GRPCRoute", grpcRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanGenericRoutes(ctx, client, "TLSRoute", tlsRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
@@ -290,21 +314,26 @@ func runGatewayScan(ctx context.Context, client *kube.Client, report *model.Repo
 	scanner.scanGenericRoutes(ctx, client, "UDPRoute", udpRoutes, parentGateways, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
 	scanner.scanListenerSets(ctx, client, listenerSets, parentGateways, refGrants)
 	scanner.scanBackendTLSPolicies(ctx, client, backendTLSPolicies, serviceCache, serviceErrCache)
+	scanner.scanEnvoyBackends(ctx, client, envoyBackends, routeScope, refGrants)
+	scanner.scanEnvoyHTTPRouteFilters(ctx, client, envoyHTTPRouteFilters, routeScope, refGrants)
+	scanner.scanEnvoyProxies(envoyProxies)
 	gatewayTargets := gatewayPolicyTargetIndexes{
-		Gateways:   gatewayIndex(parentGateways),
-		HTTPRoutes: gatewayIndex(routes),
-		GRPCRoutes: gatewayIndex(grpcRoutes),
-		TLSRoutes:  gatewayIndex(tlsRoutes),
-		TCPRoutes:  gatewayIndex(tcpRoutes),
-		UDPRoutes:  gatewayIndex(udpRoutes),
+		GatewayClasses: gatewayClassIndex(classes),
+		Gateways:       gatewayIndex(parentGateways),
+		HTTPRoutes:     gatewayIndex(routes),
+		GRPCRoutes:     gatewayIndex(grpcRoutes),
+		TLSRoutes:      gatewayIndex(tlsRoutes),
+		TCPRoutes:      gatewayIndex(tcpRoutes),
+		UDPRoutes:      gatewayIndex(udpRoutes),
 	}
-	scanner.scanGatewayPolicyAttachments(ctx, client, xBackendTrafficPolicies, "XBackendTrafficPolicy", "Gateway Policy Layer", nil, gatewayTargets, serviceCache, serviceErrCache)
-	scanner.scanGatewayPolicyAttachments(ctx, client, envoyBackendTrafficPolicies, "Envoy BackendTrafficPolicy", "Envoy Gateway Policy Layer", envoyBackendTrafficPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
-	scanner.scanGatewayPolicyAttachments(ctx, client, envoyClientTrafficPolicies, "Envoy ClientTrafficPolicy", "Envoy Gateway Policy Layer", envoyClientTrafficPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
-	scanner.scanGatewayPolicyAttachments(ctx, client, envoySecurityPolicies, "Envoy SecurityPolicy", "Envoy Gateway Policy Layer", envoySecurityPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
-	scanner.scanGatewayPolicyAttachments(ctx, client, envoyExtensionPolicies, "Envoy EnvoyExtensionPolicy", "Envoy Gateway Policy Layer", envoyExtensionPolicyTargetKinds, gatewayTargets, serviceCache, serviceErrCache)
+	scanner.scanEnvoyPatchPolicies(envoyPatchPolicies, "Envoy Gateway Policy Layer", gatewayTargets, routeScope)
+	scanner.scanGatewayPolicyAttachments(ctx, client, xBackendTrafficPolicies, "XBackendTrafficPolicy", "Gateway Policy Layer", nil, gatewayTargets, routeScope, refGrants, serviceCache, serviceErrCache)
+	scanner.scanGatewayPolicyAttachments(ctx, client, envoyBackendTrafficPolicies, "Envoy BackendTrafficPolicy", "Envoy Gateway Policy Layer", envoyBackendTrafficPolicyTargetKinds, gatewayTargets, routeScope, refGrants, serviceCache, serviceErrCache)
+	scanner.scanGatewayPolicyAttachments(ctx, client, envoyClientTrafficPolicies, "Envoy ClientTrafficPolicy", "Envoy Gateway Policy Layer", envoyClientTrafficPolicyTargetKinds, gatewayTargets, routeScope, refGrants, serviceCache, serviceErrCache)
+	scanner.scanGatewayPolicyAttachments(ctx, client, envoySecurityPolicies, "Envoy SecurityPolicy", "Envoy Gateway Policy Layer", envoySecurityPolicyTargetKinds, gatewayTargets, routeScope, refGrants, serviceCache, serviceErrCache)
+	scanner.scanGatewayPolicyAttachments(ctx, client, envoyExtensionPolicies, "Envoy EnvoyExtensionPolicy", "Envoy Gateway Policy Layer", envoyExtensionPolicyTargetKinds, gatewayTargets, routeScope, refGrants, serviceCache, serviceErrCache)
 
-	scanner.finish(len(classes), len(gateways), len(routes), len(grpcRoutes), len(tlsRoutes), len(tcpRoutes), len(udpRoutes), len(listenerSets), len(backendTLSPolicies), len(xBackendTrafficPolicies), len(envoyBackendTrafficPolicies), len(envoyClientTrafficPolicies), len(envoySecurityPolicies), len(envoyExtensionPolicies))
+	scanner.finish(len(classes), len(gateways), len(routes), len(grpcRoutes), len(tlsRoutes), len(tcpRoutes), len(udpRoutes), len(listenerSets), len(backendTLSPolicies), len(xBackendTrafficPolicies), len(envoyBackends), len(envoyBackendTrafficPolicies), len(envoyClientTrafficPolicies), len(envoySecurityPolicies), len(envoyExtensionPolicies), len(envoyPatchPolicies), len(envoyProxies), len(envoyHTTPRouteFilters))
 	dedupeGatewayDiagnoses(report)
 }
 
@@ -787,7 +816,7 @@ func (s *gatewayScanner) addFilterMissProblems() {
 		s.addProblem("Gateway API Scan", "gateway filter", model.StatusFail, fmt.Sprintf("No Gateway matched %q.", s.opts.GatewayRef), fmt.Sprintf("Gateway %q was not found in the scan scope.", s.opts.GatewayRef))
 	}
 	if s.opts.RouteRef != "" && s.scannedRoutes == 0 {
-		s.addProblem("Gateway API Scan", "route filter", model.StatusFail, fmt.Sprintf("No HTTPRoute matched %q.", s.opts.RouteRef), fmt.Sprintf("HTTPRoute %q was not found in the scan scope.", s.opts.RouteRef))
+		s.addProblem("Gateway API Scan", "route filter", model.StatusFail, fmt.Sprintf("No Gateway API Route matched %q.", s.opts.RouteRef), fmt.Sprintf("Gateway API Route %q was not found in the scan scope.", s.opts.RouteRef))
 	}
 }
 
@@ -827,13 +856,14 @@ func (s *gatewayScanner) scanGatewayClasses(classes []unstructured.Unstructured)
 	}
 }
 
-func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, classes map[string]unstructured.Unstructured, refGrants []unstructured.Unstructured, routeParentFilter map[string]bool, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
+func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, gateways []unstructured.Unstructured, classes map[string]unstructured.Unstructured, refGrants []unstructured.Unstructured, routeScope gatewayRouteScope, endpointReadyCache map[string]int, endpointErrCache map[string]error) {
 	filter := parseGatewayObjectRef(s.opts.GatewayRef, s.opts.Namespace)
 	for _, gateway := range gateways {
 		if !gatewayObjectRefMatches(gateway, filter) {
 			continue
 		}
-		if len(routeParentFilter) > 0 && !routeParentFilter[objectRefText(gateway)] {
+		gwName := objectRefText(gateway)
+		if routeScope.Active && !routeScope.Gateways[gwName] {
 			continue
 		}
 		className := stringField(gateway.Object, "spec", "gatewayClassName")
@@ -841,7 +871,6 @@ func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, 
 			continue
 		}
 		s.scannedGate++
-		gwName := objectRefText(gateway)
 		if className == "" {
 			s.addProblem("Gateway Layer", gwName, model.StatusFail, fmt.Sprintf("Gateway %s has no spec.gatewayClassName.", gwName), fmt.Sprintf("Gateway %s has no gatewayClassName, so no GatewayClass/controller can program it.", gwName))
 		} else if classes != nil {
@@ -859,7 +888,7 @@ func (s *gatewayScanner) scanGateways(ctx context.Context, client *kube.Client, 
 		if addresses := sliceField(gateway.Object, "status", "addresses"); len(addresses) == 0 {
 			s.addProblem("Gateway Layer", gwName+" address", model.StatusWarn, fmt.Sprintf("Gateway %s has no status.addresses entries.", gwName), fmt.Sprintf("Gateway %s has no assigned address, so external clients may have no usable entry point yet.", gwName))
 		}
-		s.scanGatewayListeners(ctx, client, gateway, refGrants)
+		s.scanGatewayListeners(ctx, client, gateway, refGrants, routeScope.listenerFilter(gwName))
 		s.scanGatewayDataplane(ctx, client, gateway, endpointReadyCache, endpointErrCache)
 		s.addWide("Gateway Layer", gwName, model.StatusPass, fmt.Sprintf("Gateway %s scanned.", gwName))
 	}
@@ -909,7 +938,7 @@ func (s *gatewayScanner) scanGatewayDataplane(ctx context.Context, client *kube.
 	}
 }
 
-func (s *gatewayScanner) scanGatewayListeners(ctx context.Context, client *kube.Client, gateway unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+func (s *gatewayScanner) scanGatewayListeners(ctx context.Context, client *kube.Client, gateway unstructured.Unstructured, refGrants []unstructured.Unstructured, listenerFilter map[string]bool) {
 	listeners := sliceField(gateway.Object, "spec", "listeners")
 	statusListeners := gatewayStatusListeners(gateway.Object)
 	gwName := objectRefText(gateway)
@@ -923,6 +952,9 @@ func (s *gatewayScanner) scanGatewayListeners(ctx context.Context, client *kube.
 			continue
 		}
 		name := stringField(listener, "name")
+		if listenerFilter != nil && !listenerFilter[name] {
+			continue
+		}
 		check := gwName + "/" + name
 		status := statusListeners[name]
 		s.addListenerConditionProblems(check, status)
@@ -1020,7 +1052,11 @@ func (s *gatewayScanner) scanGenericRoutes(ctx context.Context, client *kube.Cli
 		if !routeMatchesGatewayFilter(route, gatewayFilter) {
 			continue
 		}
-		s.scannedOther++
+		if s.opts.RouteRef != "" {
+			s.scannedRoutes++
+		} else {
+			s.scannedOther++
+		}
 		routeName := objectRefText(route)
 		if s.scanRouteParents(kind, route, gatewayIndex) {
 			s.scanRouteBackendRefs(ctx, client, kind, route, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache)
@@ -1216,23 +1252,606 @@ func (s *gatewayScanner) scanBackendTLSPolicyValidation(ctx context.Context, cli
 	}
 }
 
-type gatewayPolicyTargetIndexes struct {
-	Gateways   map[string]unstructured.Unstructured
-	HTTPRoutes map[string]unstructured.Unstructured
-	GRPCRoutes map[string]unstructured.Unstructured
-	TLSRoutes  map[string]unstructured.Unstructured
-	TCPRoutes  map[string]unstructured.Unstructured
-	UDPRoutes  map[string]unstructured.Unstructured
+func (s *gatewayScanner) scanEnvoyBackends(ctx context.Context, client *kube.Client, backends []unstructured.Unstructured, routeScope gatewayRouteScope, refGrants []unstructured.Unstructured) {
+	for _, backend := range backends {
+		if routeScope.Active && !routeScope.EnvoyBackends[objectRefText(backend)] {
+			continue
+		}
+		s.scannedOther++
+		name := objectRefText(backend)
+		s.scanEnvoyBackendEndpoints(backend)
+		s.scanEnvoyBackendTLS(ctx, client, backend, refGrants)
+		s.addConditionProblems("Envoy Backend Layer", "Envoy Backend", name, backend.Object, []gatewayConditionRule{
+			{Type: "Accepted", FalseStatus: model.StatusFail, MissingStatus: model.StatusWarn},
+		})
+		s.addWide("Envoy Backend Layer", name, model.StatusPass, fmt.Sprintf("Envoy Backend %s scanned.", name))
+	}
 }
 
-func (s *gatewayScanner) scanGatewayPolicyAttachments(ctx context.Context, client *kube.Client, policies []unstructured.Unstructured, policyKind, layer string, allowedKinds map[string]bool, targets gatewayPolicyTargetIndexes, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+func (s *gatewayScanner) scanEnvoyBackendEndpoints(backend unstructured.Unstructured) {
+	name := objectRefText(backend)
+	backendType := defaultString(stringField(backend.Object, "spec", "type"), "Endpoints")
+	endpoints := sliceField(backend.Object, "spec", "endpoints")
+	if backendType == "Endpoints" && len(endpoints) == 0 {
+		s.addProblem("Envoy Backend Layer", name+" endpoints", model.StatusFail, fmt.Sprintf("Envoy Backend %s type Endpoints has no spec.endpoints entries.", name), fmt.Sprintf("Envoy Backend %s has no endpoints, so Gateway traffic routed to it has no backend address.", name))
+		return
+	}
+	for index, raw := range endpoints {
+		endpoint, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		check := fmt.Sprintf("%s endpoint %d", name, index+1)
+		endpointKinds := 0
+		if len(mapField(endpoint, "fqdn")) > 0 {
+			endpointKinds++
+			fqdn := mapField(endpoint, "fqdn")
+			host := stringField(fqdn, "hostname")
+			if host == "" {
+				s.addProblem("Envoy Backend Layer", check+" fqdn", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d fqdn has no hostname.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has an FQDN endpoint with no hostname.", name, index+1))
+			}
+			if port, ok := int32Field(fqdn, "port"); !ok || port <= 0 {
+				s.addProblem("Envoy Backend Layer", check+" fqdn port", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d fqdn has no valid port.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has an FQDN endpoint with no valid port.", name, index+1))
+			}
+		}
+		if len(mapField(endpoint, "ip")) > 0 {
+			endpointKinds++
+			ipEndpoint := mapField(endpoint, "ip")
+			address := stringField(ipEndpoint, "address")
+			if net.ParseIP(address) == nil {
+				s.addProblem("Envoy Backend Layer", check+" ip", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d has invalid IP address %q.", name, index+1, address), fmt.Sprintf("Envoy Backend %s endpoint %d has an invalid IP address.", name, index+1))
+			}
+			if port, ok := int32Field(ipEndpoint, "port"); !ok || port <= 0 {
+				s.addProblem("Envoy Backend Layer", check+" ip port", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d ip has no valid port.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has an IP endpoint with no valid port.", name, index+1))
+			}
+		}
+		if len(mapField(endpoint, "unix")) > 0 {
+			endpointKinds++
+			path := stringField(endpoint, "unix", "path")
+			if path == "" {
+				s.addProblem("Envoy Backend Layer", check+" unix", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d unix has no path.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has a Unix endpoint with no path.", name, index+1))
+			}
+			if len(path) > 108 {
+				s.addProblem("Envoy Backend Layer", check+" unix path", model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d unix path is longer than 108 characters.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has a Unix socket path longer than 108 characters.", name, index+1))
+			}
+		}
+		if endpointKinds == 0 {
+			s.addProblem("Envoy Backend Layer", check, model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d has no fqdn/ip/unix address.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d has no usable address type.", name, index+1))
+		}
+		if endpointKinds > 1 {
+			s.addProblem("Envoy Backend Layer", check, model.StatusFail, fmt.Sprintf("Envoy Backend %s endpoint %d sets multiple address types.", name, index+1), fmt.Sprintf("Envoy Backend %s endpoint %d sets multiple address types; use exactly one of fqdn, ip, or unix.", name, index+1))
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTLS(ctx context.Context, client *kube.Client, backend unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	name := objectRefText(backend)
+	tls := mapField(backend.Object, "spec", "tls")
+	if len(tls) == 0 {
+		return
+	}
+	caRefs := sliceField(tls, "caCertificateRefs")
+	wellKnown := stringField(tls, "wellKnownCACertificates")
+	if len(caRefs) == 0 && wellKnown == "" {
+		s.addProblem("Envoy Backend Layer", name+" tls", model.StatusFail, fmt.Sprintf("Envoy Backend %s TLS has no CA validation source.", name), fmt.Sprintf("Envoy Backend %s TLS does not specify caCertificateRefs or wellKnownCACertificates.", name))
+	}
+	if len(caRefs) > 0 && wellKnown != "" {
+		s.addProblem("Envoy Backend Layer", name+" tls", model.StatusFail, fmt.Sprintf("Envoy Backend %s TLS specifies both caCertificateRefs and wellKnownCACertificates.", name), fmt.Sprintf("Envoy Backend %s TLS specifies both caCertificateRefs and wellKnownCACertificates.", name))
+	}
+	for index, raw := range caRefs {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		s.scanEnvoyPolicyDataRef(ctx, client, backend, "Envoy Backend", fmt.Sprintf("tls caCertificateRef %d", index+1), ref, "ca.crt", refGrants)
+	}
+	if clientCert := mapField(tls, "clientCertificateRef"); len(clientCert) > 0 {
+		s.scanEnvoyPolicyDataRef(ctx, client, backend, "Envoy Backend", "tls clientCertificateRef", clientCert, "tls.crt", refGrants)
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyHTTPRouteFilters(ctx context.Context, client *kube.Client, filters []unstructured.Unstructured, routeScope gatewayRouteScope, refGrants []unstructured.Unstructured) {
+	for _, filter := range filters {
+		if routeScope.Active && !routeScope.HTTPRouteFilters[objectRefText(filter)] {
+			continue
+		}
+		s.scannedOther++
+		name := objectRefText(filter)
+		spec := mapField(filter.Object, "spec")
+		if len(spec) == 0 {
+			s.addProblem("Envoy HTTPRouteFilter Layer", name+" spec", model.StatusFail, fmt.Sprintf("Envoy HTTPRouteFilter %s has no spec.", name), fmt.Sprintf("Envoy HTTPRouteFilter %s has no spec, so it cannot apply any filter behavior.", name))
+			continue
+		}
+		if directResponse := mapField(spec, "directResponse"); len(directResponse) > 0 {
+			if status, ok := int32Field(directResponse, "statusCode"); ok && (status < 100 || status > 599) {
+				s.addProblem("Envoy HTTPRouteFilter Layer", name+" directResponse", model.StatusFail, fmt.Sprintf("Envoy HTTPRouteFilter %s directResponse statusCode %d is outside HTTP status range.", name, status), fmt.Sprintf("Envoy HTTPRouteFilter %s directResponse has invalid HTTP status code %d.", name, status))
+			}
+		}
+		if credential := mapField(spec, "credentialInjection", "credential", "valueRef"); len(credential) > 0 {
+			s.scanEnvoyPolicyDataRef(ctx, client, filter, "Envoy HTTPRouteFilter", "credentialInjection valueRef", credential, "credential", refGrants)
+		} else if len(mapField(spec, "credentialInjection")) > 0 {
+			s.addProblem("Envoy HTTPRouteFilter Layer", name+" credentialInjection", model.StatusFail, fmt.Sprintf("Envoy HTTPRouteFilter %s credentialInjection has no credential.valueRef.", name), fmt.Sprintf("Envoy HTTPRouteFilter %s credentialInjection does not reference a credential Secret.", name))
+		}
+		if rewritePath := mapField(spec, "urlRewrite", "path"); len(rewritePath) > 0 {
+			if stringField(rewritePath, "type") == "ReplaceRegexMatch" {
+				regex := stringField(rewritePath, "replaceRegexMatch", "pattern")
+				if regex == "" {
+					s.addProblem("Envoy HTTPRouteFilter Layer", name+" urlRewrite", model.StatusFail, fmt.Sprintf("Envoy HTTPRouteFilter %s urlRewrite ReplaceRegexMatch has no pattern.", name), fmt.Sprintf("Envoy HTTPRouteFilter %s URL rewrite has no regex pattern.", name))
+				} else if _, err := regexp.Compile(regex); err != nil {
+					s.addProblem("Envoy HTTPRouteFilter Layer", name+" urlRewrite", model.StatusFail, fmt.Sprintf("Envoy HTTPRouteFilter %s urlRewrite regex pattern is invalid: %v", name, err), fmt.Sprintf("Envoy HTTPRouteFilter %s URL rewrite has an invalid regex pattern.", name))
+				}
+			}
+		}
+		s.addWide("Envoy HTTPRouteFilter Layer", name, model.StatusPass, fmt.Sprintf("Envoy HTTPRouteFilter %s scanned.", name))
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyProxies(proxies []unstructured.Unstructured) {
+	for _, proxy := range proxies {
+		s.scannedOther++
+		name := objectRefText(proxy)
+		providerType := stringField(proxy.Object, "spec", "provider", "type")
+		if providerType == "" {
+			// Envoy Gateway defaults to Kubernetes provider when provider is omitted.
+		} else if providerType != "Kubernetes" && providerType != "Host" {
+			s.addProblem("EnvoyProxy Layer", name+" provider", model.StatusFail, fmt.Sprintf("EnvoyProxy %s provider.type %q is not supported.", name, providerType), fmt.Sprintf("EnvoyProxy %s uses unsupported provider.type %q.", name, providerType))
+		}
+		if concurrency, ok, _ := unstructured.NestedInt64(proxy.Object, "spec", "concurrency"); ok && concurrency < 0 {
+			s.addProblem("EnvoyProxy Layer", name+" concurrency", model.StatusFail, fmt.Sprintf("EnvoyProxy %s concurrency %d is invalid.", name, concurrency), fmt.Sprintf("EnvoyProxy %s has invalid negative concurrency.", name))
+		}
+		s.scanGatewayPolicyAncestorStatus(proxy, "EnvoyProxy", "EnvoyProxy Layer")
+		s.addWide("EnvoyProxy Layer", name, model.StatusPass, fmt.Sprintf("EnvoyProxy %s scanned.", name))
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyPatchPolicies(policies []unstructured.Unstructured, layer string, targets gatewayPolicyTargetIndexes, routeScope gatewayRouteScope) {
 	for _, policy := range policies {
+		if routeScope.Active && !envoyPatchPolicyMatchesRouteScope(policy, routeScope) {
+			continue
+		}
+		s.scannedOther++
+		name := objectRefText(policy)
+		target := mapField(policy.Object, "spec", "targetRef")
+		if len(target) == 0 {
+			s.addProblem(layer, name+" target", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no spec.targetRef.", name), fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no targetRef, so KNM cannot determine what it applies to.", name))
+		} else {
+			s.scanEnvoyPatchPolicyTarget(policy, layer, targets)
+		}
+		if patchType := stringField(policy.Object, "spec", "type"); patchType == "" {
+			s.addProblem(layer, name+" type", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no spec.type.", name), fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no type.", name))
+		} else if patchType != "JSONPatch" {
+			s.addProblem(layer, name+" type", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s type %q is unsupported.", name, patchType), fmt.Sprintf("Envoy EnvoyPatchPolicy %s uses unsupported type %q.", name, patchType))
+		}
+		patches := sliceField(policy.Object, "spec", "jsonPatches")
+		if len(patches) == 0 {
+			s.addProblem(layer, name+" jsonPatches", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no jsonPatches.", name), fmt.Sprintf("Envoy EnvoyPatchPolicy %s has no jsonPatches, so it cannot patch any Envoy xDS resource.", name))
+		}
+		for index, raw := range patches {
+			patch, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			check := fmt.Sprintf("%s jsonPatch %d", name, index+1)
+			if stringField(patch, "name") == "" {
+				s.addProblem(layer, check+" name", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no name.", name, index+1), fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no target resource name.", name, index+1))
+			}
+			if stringField(patch, "type") == "" {
+				s.addProblem(layer, check+" type", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no xDS type.", name, index+1), fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no xDS resource type.", name, index+1))
+			}
+			if len(mapField(patch, "operation")) == 0 {
+				s.addProblem(layer, check+" operation", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no operation.", name, index+1), fmt.Sprintf("Envoy EnvoyPatchPolicy %s jsonPatch %d has no JSON patch operation.", name, index+1))
+			}
+		}
+		s.scanGatewayPolicyAncestorStatus(policy, "Envoy EnvoyPatchPolicy", layer)
+		s.addWide(layer, name, model.StatusPass, fmt.Sprintf("Envoy EnvoyPatchPolicy %s scanned.", name))
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyPatchPolicyTarget(policy unstructured.Unstructured, layer string, targets gatewayPolicyTargetIndexes) {
+	name := objectRefText(policy)
+	target := mapField(policy.Object, "spec", "targetRef")
+	targetName := stringField(target, "name")
+	if targetName == "" {
+		s.addProblem(layer, name+" target", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s targetRef has no name.", name), fmt.Sprintf("Envoy EnvoyPatchPolicy %s has a targetRef with no name.", name))
+		return
+	}
+	group := stringField(target, "group")
+	kind := defaultString(stringField(target, "kind"), "Gateway")
+	namespace := policy.GetNamespace()
+	switch gatewayPolicyCanonicalTargetKind(group, kind) {
+	case "Gateway":
+		if _, ok := targets.Gateways[namespace+"/"+targetName]; !ok {
+			s.addProblem(layer, name+" target", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s targets missing Gateway %s/%s.", name, namespace, targetName), fmt.Sprintf("Envoy EnvoyPatchPolicy %s targets Gateway %s/%s, but that Gateway was not found.", name, namespace, targetName))
+		}
+	case "GatewayClass":
+		if _, ok := targets.GatewayClasses[targetName]; !ok {
+			s.addProblem(layer, name+" target", model.StatusFail, fmt.Sprintf("Envoy EnvoyPatchPolicy %s targets missing GatewayClass %s.", name, targetName), fmt.Sprintf("Envoy EnvoyPatchPolicy %s targets GatewayClass %s, but that GatewayClass was not found.", name, targetName))
+		}
+	default:
+		message := fmt.Sprintf("Envoy EnvoyPatchPolicy %s targets kind %s %s; KNM does not evaluate that target type.", name, gatewayBackendKindText(group, kind), targetName)
+		s.addProblemCategorized(layer, name+" target", model.StatusWarn, "unsupported-ref", message, message)
+	}
+}
+
+func envoyPatchPolicyMatchesRouteScope(policy unstructured.Unstructured, scope gatewayRouteScope) bool {
+	target := mapField(policy.Object, "spec", "targetRef")
+	targetName := stringField(target, "name")
+	if targetName == "" {
+		return true
+	}
+	group := stringField(target, "group")
+	kind := defaultString(stringField(target, "kind"), "Gateway")
+	if gatewayPolicyCanonicalTargetKind(group, kind) != "Gateway" {
+		return false
+	}
+	return scope.Gateways[policy.GetNamespace()+"/"+targetName]
+}
+
+type gatewayPolicyTargetIndexes struct {
+	GatewayClasses map[string]unstructured.Unstructured
+	Gateways       map[string]unstructured.Unstructured
+	HTTPRoutes     map[string]unstructured.Unstructured
+	GRPCRoutes     map[string]unstructured.Unstructured
+	TLSRoutes      map[string]unstructured.Unstructured
+	TCPRoutes      map[string]unstructured.Unstructured
+	UDPRoutes      map[string]unstructured.Unstructured
+}
+
+type gatewayRouteScope struct {
+	Active              bool
+	Gateways            map[string]bool
+	GatewayAllListeners map[string]bool
+	GatewayListeners    map[string]map[string]bool
+	Routes              map[string]bool
+	Services            map[string]bool
+	EnvoyBackends       map[string]bool
+	HTTPRouteFilters    map[string]bool
+}
+
+func (s gatewayRouteScope) listenerFilter(gateway string) map[string]bool {
+	if !s.Active || s.GatewayAllListeners[gateway] {
+		return nil
+	}
+	return s.GatewayListeners[gateway]
+}
+
+func (s *gatewayScanner) scanGatewayPolicyAttachments(ctx context.Context, client *kube.Client, policies []unstructured.Unstructured, policyKind, layer string, allowedKinds map[string]bool, targets gatewayPolicyTargetIndexes, routeScope gatewayRouteScope, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	for _, policy := range policies {
+		if routeScope.Active && !gatewayPolicyMatchesRouteScope(policy, routeScope) {
+			continue
+		}
 		s.scannedOther++
 		name := objectRefText(policy)
 		s.scanGatewayPolicyTargets(ctx, client, policy, policyKind, layer, allowedKinds, targets, serviceCache, serviceErrCache)
+		if policyKind == "Envoy BackendTrafficPolicy" {
+			s.scanEnvoyBackendTrafficPolicySemantics(policy)
+		}
+		if policyKind == "Envoy ClientTrafficPolicy" {
+			s.scanEnvoyClientTrafficPolicySemantics(ctx, client, policy, refGrants)
+		}
+		if policyKind == "Envoy SecurityPolicy" {
+			s.scanEnvoySecurityPolicySemantics(ctx, client, policy, targets, refGrants, serviceCache, serviceErrCache)
+		}
+		if policyKind == "Envoy EnvoyExtensionPolicy" {
+			s.scanEnvoyExtensionPolicySemantics(ctx, client, policy, serviceCache, serviceErrCache)
+		}
 		s.scanGatewayPolicyAncestorStatus(policy, policyKind, layer)
 		s.addWide(layer, name, model.StatusPass, fmt.Sprintf("%s %s scanned.", policyKind, name))
 	}
+}
+
+func (s *gatewayScanner) scanEnvoyBackendTrafficPolicySemantics(policy unstructured.Unstructured) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	if len(spec) == 0 {
+		return
+	}
+	for index, targetRef := range gatewayPolicyTargetRefs(policy) {
+		target := targetRef.ref
+		group := stringField(target, "group")
+		kind := defaultString(stringField(target, "kind"), "Service")
+		canonical := gatewayPolicyCanonicalTargetKind(group, kind)
+		targetName := defaultString(stringField(target, "name"), "<unnamed>")
+		namespace := defaultString(stringField(target, "namespace"), policy.GetNamespace())
+		if canonical == "Gateway" && stringField(spec, "mergeType") != "" {
+			s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d mergeType", name, index+1), model.StatusFail, fmt.Sprintf("Envoy BackendTrafficPolicy %s sets mergeType while targeting Gateway %s/%s.", name, namespace, targetName), fmt.Sprintf("Envoy BackendTrafficPolicy %s targets Gateway %s/%s and sets mergeType, but mergeType cannot be used when targeting a Gateway.", name, namespace, targetName))
+		}
+		if canonical == "GRPCRoute" && len(mapField(spec, "requestBuffer")) > 0 {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d requestBuffer", name, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy BackendTrafficPolicy %s enables requestBuffer for GRPCRoute %s/%s. This is usually only safe for unary gRPC; streaming gRPC can hang or fail.", name, namespace, targetName), "")
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyClientTrafficPolicySemantics(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	if len(spec) == 0 {
+		return
+	}
+	if _, proxyProtocolSet := spec["proxyProtocol"]; proxyProtocolSet {
+		if enabled, ok := spec["enableProxyProtocol"].(bool); ok && enabled {
+			s.addProblemCategorized("Envoy Gateway Policy Layer", name+" proxyProtocol", model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy ClientTrafficPolicy %s sets both enableProxyProtocol and proxyProtocol; proxyProtocol takes precedence.", name), "")
+		}
+	}
+	clientValidation := mapField(spec, "tls", "clientValidation")
+	for index, raw := range sliceField(clientValidation, "caCertificateRefs") {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		s.scanEnvoyPolicyDataRef(ctx, client, policy, "Envoy ClientTrafficPolicy", fmt.Sprintf("clientValidation caCertificateRef %d", index+1), ref, "ca.crt", refGrants)
+	}
+	for index, raw := range sliceField(clientValidation, "crl", "refs") {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		s.scanEnvoyPolicyDataRef(ctx, client, policy, "Envoy ClientTrafficPolicy", fmt.Sprintf("clientValidation crl %d", index+1), ref, "ca.crl", refGrants)
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyExtensionPolicySemantics(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	name := objectRefText(policy)
+	for extIndex, raw := range sliceField(policy.Object, "spec", "extProc") {
+		extProc, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		refs := envoyPolicyBackendRefs(extProc)
+		if len(refs) == 0 {
+			s.addProblem("Envoy Gateway Policy Layer", fmt.Sprintf("%s extProc %d", name, extIndex+1), model.StatusFail, fmt.Sprintf("Envoy EnvoyExtensionPolicy %s extProc %d has no backendRef/backendRefs.", name, extIndex+1), fmt.Sprintf("Envoy EnvoyExtensionPolicy %s extProc %d does not reference an external processor backend Service.", name, extIndex+1))
+			continue
+		}
+		for index, ref := range refs {
+			s.scanEnvoyPolicyBackendRef(ctx, client, policy, "Envoy EnvoyExtensionPolicy", fmt.Sprintf("extProc %d backendRef %d", extIndex+1, index+1), ref, serviceCache, serviceErrCache)
+		}
+	}
+}
+
+func (s *gatewayScanner) scanEnvoySecurityPolicySemantics(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, targets gatewayPolicyTargetIndexes, refGrants []unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	name := objectRefText(policy)
+	spec := mapField(policy.Object, "spec")
+	if len(spec) == 0 {
+		return
+	}
+	for index, targetRef := range gatewayPolicyTargetRefs(policy) {
+		target := targetRef.ref
+		targetName := stringField(target, "name")
+		if targetName == "" {
+			continue
+		}
+		group := stringField(target, "group")
+		kind := defaultString(stringField(target, "kind"), "Service")
+		namespace := defaultString(stringField(target, "namespace"), policy.GetNamespace())
+		if gatewayPolicyCanonicalTargetKind(group, kind) == "TCPRoute" {
+			targetRefName := namespace + "/" + targetName
+			if gatewaySecurityPolicyHasHTTPOnlyAuth(spec) {
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d tcp auth", name, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy SecurityPolicy %s targets TCPRoute %s with HTTP authentication settings; those settings do not apply to raw TCP traffic.", name, targetRefName), "")
+			}
+			if len(sliceField(spec, "authorization", "rules")) > 0 {
+				s.addProblemCategorized("Envoy Gateway Policy Layer", fmt.Sprintf("%s target %d tcp authorization", name, index+1), model.StatusWarn, "policy-ambiguous", fmt.Sprintf("Envoy SecurityPolicy %s targets TCPRoute %s with HTTP authorization rules; only client-IP based authorization applies to TCPRoute targets.", name, targetRefName), "")
+			}
+		}
+	}
+	s.scanEnvoySecurityPolicyBasicAuth(ctx, client, policy, refGrants)
+	s.scanEnvoySecurityPolicyAPIKeyAuth(ctx, client, policy, refGrants)
+	s.scanEnvoySecurityPolicyOIDC(ctx, client, policy, refGrants)
+	s.scanEnvoySecurityPolicyExtAuth(ctx, client, policy, serviceCache, serviceErrCache)
+}
+
+func gatewaySecurityPolicyHasHTTPOnlyAuth(spec map[string]interface{}) bool {
+	for _, field := range []string{"basicAuth", "jwt", "oidc", "apiKeyAuth", "cors"} {
+		if len(mapField(spec, field)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *gatewayScanner) scanEnvoySecurityPolicyBasicAuth(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	name := objectRefText(policy)
+	basicAuth := mapField(policy.Object, "spec", "basicAuth")
+	if len(basicAuth) == 0 {
+		return
+	}
+	users := mapField(basicAuth, "users")
+	if len(users) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" basicAuth", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s basicAuth has no users Secret reference.", name), fmt.Sprintf("Envoy SecurityPolicy %s enables basicAuth but does not reference a users Secret.", name))
+		return
+	}
+	s.scanEnvoyPolicySecretRef(ctx, client, policy, "Envoy SecurityPolicy", "basicAuth users", users, ".htpasswd", refGrants)
+}
+
+func (s *gatewayScanner) scanEnvoySecurityPolicyAPIKeyAuth(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	name := objectRefText(policy)
+	apiKeyAuth := mapField(policy.Object, "spec", "apiKeyAuth")
+	if len(apiKeyAuth) == 0 {
+		return
+	}
+	credentialRefs := sliceField(apiKeyAuth, "credentialRefs")
+	if len(credentialRefs) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" apiKeyAuth", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s apiKeyAuth has no credentialRefs.", name), fmt.Sprintf("Envoy SecurityPolicy %s enables apiKeyAuth but does not reference any credential Secrets.", name))
+	}
+	for index, raw := range credentialRefs {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		s.scanEnvoyPolicySecretRef(ctx, client, policy, "Envoy SecurityPolicy", fmt.Sprintf("apiKeyAuth credentialRef %d", index+1), ref, "", refGrants)
+	}
+}
+
+func (s *gatewayScanner) scanEnvoySecurityPolicyOIDC(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, refGrants []unstructured.Unstructured) {
+	name := objectRefText(policy)
+	oidc := mapField(policy.Object, "spec", "oidc")
+	if len(oidc) == 0 {
+		return
+	}
+	clientID := stringField(oidc, "clientID")
+	clientIDRef := mapField(oidc, "clientIDRef")
+	if clientID == "" && len(clientIDRef) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" oidc clientID", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s oidc has no clientID or clientIDRef.", name), fmt.Sprintf("Envoy SecurityPolicy %s enables OIDC but does not provide clientID or clientIDRef.", name))
+	}
+	if clientID != "" && len(clientIDRef) > 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" oidc clientID", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s oidc specifies both clientID and clientIDRef.", name), fmt.Sprintf("Envoy SecurityPolicy %s OIDC config specifies both clientID and clientIDRef.", name))
+	}
+	if len(clientIDRef) > 0 {
+		s.scanEnvoyPolicySecretRef(ctx, client, policy, "Envoy SecurityPolicy", "oidc clientIDRef", clientIDRef, "client-id", refGrants)
+	}
+	clientSecret := mapField(oidc, "clientSecret")
+	if len(clientSecret) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" oidc clientSecret", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s oidc has no clientSecret Secret reference.", name), fmt.Sprintf("Envoy SecurityPolicy %s enables OIDC but does not reference a clientSecret Secret.", name))
+		return
+	}
+	s.scanEnvoyPolicySecretRef(ctx, client, policy, "Envoy SecurityPolicy", "oidc clientSecret", clientSecret, "client-secret", refGrants)
+}
+
+func (s *gatewayScanner) scanEnvoySecurityPolicyExtAuth(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	name := objectRefText(policy)
+	extAuth := mapField(policy.Object, "spec", "extAuth")
+	if len(extAuth) == 0 {
+		return
+	}
+	backendRefs := envoySecurityPolicyExtAuthBackendRefs(extAuth)
+	if len(backendRefs) == 0 {
+		s.addProblem("Envoy Gateway Policy Layer", name+" extAuth", model.StatusFail, fmt.Sprintf("Envoy SecurityPolicy %s extAuth has no backendRef/backendRefs.", name), fmt.Sprintf("Envoy SecurityPolicy %s enables external authorization but does not reference an auth backend Service.", name))
+		return
+	}
+	for index, ref := range backendRefs {
+		s.scanEnvoyPolicyBackendRef(ctx, client, policy, "Envoy SecurityPolicy", fmt.Sprintf("extAuth backendRef %d", index+1), ref, serviceCache, serviceErrCache)
+	}
+}
+
+func envoySecurityPolicyExtAuthBackendRefs(extAuth map[string]interface{}) []map[string]interface{} {
+	return envoyPolicyBackendRefs(extAuth)
+}
+
+func envoyPolicyBackendRefs(config map[string]interface{}) []map[string]interface{} {
+	var refs []map[string]interface{}
+	for _, protocol := range []string{"http", "grpc", "service"} {
+		service := mapField(config, protocol)
+		if len(service) == 0 {
+			continue
+		}
+		if backendRef := mapField(service, "backendRef"); len(backendRef) > 0 {
+			refs = append(refs, backendRef)
+		}
+		for _, raw := range sliceField(service, "backendRefs") {
+			ref, ok := raw.(map[string]interface{})
+			if ok {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	if backendRef := mapField(config, "backendRef"); len(backendRef) > 0 {
+		refs = append(refs, backendRef)
+	}
+	for _, raw := range sliceField(config, "backendRefs") {
+		ref, ok := raw.(map[string]interface{})
+		if ok {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func (s *gatewayScanner) scanEnvoyPolicyBackendRef(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, policyKind, checkSuffix string, ref map[string]interface{}, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
+	policyName := objectRefText(policy)
+	targetName := stringField(ref, "name")
+	check := policyName + " " + checkSuffix
+	if targetName == "" {
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s has no name.", policyKind, policyName, checkSuffix), fmt.Sprintf("%s %s has backendRef with no name.", policyKind, policyName))
+		return
+	}
+	group := stringField(ref, "group")
+	kind := defaultString(stringField(ref, "kind"), "Service")
+	if group != "" || kind != "Service" {
+		message := fmt.Sprintf("%s %s %s targets backend kind %s %s/%s; KNM only validates core Service backends right now.", policyKind, policyName, checkSuffix, gatewayBackendKindText(group, kind), policy.GetNamespace(), targetName)
+		s.addProblemCategorized("Envoy Gateway Policy Layer", check, model.StatusWarn, "unsupported-ref", message, message)
+		return
+	}
+	namespace := defaultString(stringField(ref, "namespace"), policy.GetNamespace())
+	backendDescription := "backend Service"
+	if policyKind == "Envoy SecurityPolicy" {
+		backendDescription = "external authorization backend Service"
+	}
+	if policyKind == "Envoy EnvoyExtensionPolicy" {
+		backendDescription = "external processor backend Service"
+	}
+	service, err := cachedService(ctx, client, namespace, targetName, serviceCache, serviceErrCache)
+	if err != nil {
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s targets missing/unreadable Service %s/%s: %v", policyKind, policyName, checkSuffix, namespace, targetName, err), fmt.Sprintf("%s %s %s %s/%s is missing or unreadable.", policyKind, policyName, backendDescription, namespace, targetName))
+		return
+	}
+	if port, ok := int32Field(ref, "port"); ok && !serviceExposesPort(service, port) {
+		s.addProblem("Envoy Gateway Policy Layer", check+" port", model.StatusFail, fmt.Sprintf("%s %s %s targets Service %s/%s port %d, but the Service exposes %s.", policyKind, policyName, checkSuffix, namespace, targetName, port, servicePorts(service)), fmt.Sprintf("%s %s %s %s/%s does not expose port %d.", policyKind, policyName, backendDescription, namespace, targetName, port))
+	}
+}
+
+func (s *gatewayScanner) scanEnvoyPolicySecretRef(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, policyKind, purpose string, ref map[string]interface{}, requiredKey string, refGrants []unstructured.Unstructured) {
+	s.scanEnvoyPolicyDataRef(ctx, client, policy, policyKind, purpose, ref, requiredKey, refGrants)
+}
+
+func (s *gatewayScanner) scanEnvoyPolicyDataRef(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, policyKind, purpose string, ref map[string]interface{}, requiredKey string, refGrants []unstructured.Unstructured) {
+	name := objectRefText(policy)
+	refName := stringField(ref, "name")
+	check := fmt.Sprintf("%s %s", name, purpose)
+	if refName == "" {
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s has no reference name.", policyKind, name, purpose), fmt.Sprintf("%s %s has a %s reference with no name.", policyKind, name, purpose))
+		return
+	}
+	group := stringField(ref, "group")
+	kind := defaultString(stringField(ref, "kind"), "Secret")
+	if group != "" || (kind != "Secret" && kind != "ConfigMap") {
+		message := fmt.Sprintf("%s %s %s uses %s/%s %s; KNM only validates core Secret and ConfigMap refs right now.", policyKind, name, purpose, group, kind, refName)
+		s.addProblemCategorized("Envoy Gateway Policy Layer", check, model.StatusWarn, "unsupported-ref", message, message)
+		return
+	}
+	namespace := defaultString(stringField(ref, "namespace"), policy.GetNamespace())
+	if namespace != policy.GetNamespace() && !referenceGrantAllows(refGrants, "gateway.envoyproxy.io", policy.GetKind(), policy.GetNamespace(), group, kind, refName, namespace) {
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s references %s %s/%s without a matching ReferenceGrant.", policyKind, name, purpose, kind, namespace, refName), fmt.Sprintf("%s %s references %s %s/%s across namespaces, but that namespace does not grant the reference.", policyKind, name, kind, namespace, refName))
+		return
+	}
+	data, err := envoyPolicyRefData(ctx, client, namespace, refName, kind)
+	if err != nil {
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s references missing/unreadable %s %s/%s: %v", policyKind, name, purpose, kind, namespace, refName, err), fmt.Sprintf("%s %s references %s %s/%s, but that object is missing or unreadable.", policyKind, name, kind, namespace, refName))
+		return
+	}
+	if requiredKey != "" {
+		if _, ok := data[requiredKey]; !ok {
+			s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s %s %s/%s does not contain key %s.", policyKind, name, purpose, kind, namespace, refName, requiredKey), fmt.Sprintf("%s %s %s %s %s/%s is missing key %s.", policyKind, name, purpose, kind, namespace, refName, requiredKey))
+		}
+		return
+	}
+	if len(data) == 0 {
+		dataDescription := "data"
+		if kind == "Secret" {
+			dataDescription = "credential data"
+		}
+		s.addProblem("Envoy Gateway Policy Layer", check, model.StatusFail, fmt.Sprintf("%s %s %s %s %s/%s has no data entries.", policyKind, name, purpose, kind, namespace, refName), fmt.Sprintf("%s %s %s %s %s/%s has no %s.", policyKind, name, purpose, kind, namespace, refName, dataDescription))
+	}
+}
+
+func envoyPolicyRefData(ctx context.Context, client *kube.Client, namespace, name, kind string) (map[string][]byte, error) {
+	if kind == "ConfigMap" {
+		configMap, err := client.Core.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		data := map[string][]byte{}
+		for key, value := range configMap.Data {
+			data[key] = []byte(value)
+		}
+		for key, value := range configMap.BinaryData {
+			data[key] = value
+		}
+		return data, nil
+	}
+	secret, err := client.Core.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return secret.Data, nil
 }
 
 func (s *gatewayScanner) scanGatewayPolicyTargets(ctx context.Context, client *kube.Client, policy unstructured.Unstructured, policyKind, layer string, allowedKinds map[string]bool, targets gatewayPolicyTargetIndexes, serviceCache map[string]*corev1.Service, serviceErrCache map[string]error) {
@@ -1325,7 +1944,7 @@ func gatewayPolicyCanonicalTargetKind(group, kind string) string {
 	switch {
 	case group == "" && kind == "Service":
 		return "Service"
-	case (group == "" || group == gatewayv1.GroupName) && (kind == "Gateway" || kind == "HTTPRoute" || kind == "GRPCRoute" || kind == "TLSRoute" || kind == "TCPRoute" || kind == "UDPRoute"):
+	case (group == "" || group == gatewayv1.GroupName) && (kind == "GatewayClass" || kind == "Gateway" || kind == "HTTPRoute" || kind == "GRPCRoute" || kind == "TLSRoute" || kind == "TCPRoute" || kind == "UDPRoute"):
 		return kind
 	default:
 		return ""
@@ -1620,11 +2239,15 @@ func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *k
 		s.addProblem("Gateway Traffic Intent", "route match", model.StatusFail, reason.Message, reason.Diagnosis)
 		return
 	}
-	s.addGatewayExpectedServiceCheck(matches)
 	routeIndex := map[string]unstructured.Unstructured{}
 	for _, route := range scopedRoutes {
 		routeIndex[objectRefText(route)] = route
+		if route.GetNamespace() != "" && route.GetName() != "" {
+			routeIndex[route.GetNamespace()+"/"+route.GetName()] = route
+		}
 	}
+	s.addGatewayTrafficRouteParentStatus(routeIndex, gatewayIndex(scopedParentGateways), matches)
+	s.addGatewayExpectedServiceCheck(matches)
 	if gatewayTrafficIntentUsesHTTP(intent) {
 		s.addGatewaySelectedRuleFilterDetails(ctx, client, routeIndex, selectedRules, refGrants, serviceCache, serviceErrCache, endpointReadyCache, endpointErrCache, intent)
 	}
@@ -1686,6 +2309,22 @@ func (s *gatewayScanner) scanGatewayTrafficIntent(ctx context.Context, client *k
 	}
 	if s.report.CountByStatus(model.StatusFail) == 0 && s.report.CountByStatus(model.StatusWarn) == 0 {
 		s.report.Add("Gateway Traffic Path", "matched backends", model.StatusPass, fmt.Sprintf("%d matching backend path(s) found for %s, and no obvious backend reference or endpoint problems were detected.", len(matches), intentText))
+	}
+}
+
+func (s *gatewayScanner) addGatewayTrafficRouteParentStatus(routeIndex map[string]unstructured.Unstructured, parentGateways map[string]unstructured.Unstructured, matches []gatewayPathMatch) {
+	seen := map[string]bool{}
+	for _, match := range matches {
+		routeKey := match.RouteNamespace + "/" + match.RouteName
+		if seen[routeKey] {
+			continue
+		}
+		seen[routeKey] = true
+		route, ok := routeIndex[routeKey]
+		if !ok {
+			continue
+		}
+		s.scanRouteParents(defaultString(match.RouteKind, route.GetKind()), route, parentGateways)
 	}
 }
 
@@ -4189,28 +4828,193 @@ func gatewayPathMatchSortKey(match gatewayPathMatch) string {
 	)
 }
 
-func gatewayParentsForRouteFilter(routes []unstructured.Unstructured, opts GatewayOptions) map[string]bool {
+func gatewayRouteScopeForRouteFilter(httpRoutes, grpcRoutes, tlsRoutes, tcpRoutes, udpRoutes []unstructured.Unstructured, opts GatewayOptions) gatewayRouteScope {
 	if opts.RouteRef == "" {
-		return nil
+		return gatewayRouteScope{}
 	}
 	filter := parseGatewayObjectRef(opts.RouteRef, opts.Namespace)
-	out := map[string]bool{}
-	for _, route := range routes {
-		if !gatewayObjectRefMatches(route, filter) {
-			continue
-		}
-		parentRefs := sliceField(route.Object, "spec", "parentRefs")
-		for _, raw := range parentRefs {
-			parent, ok := raw.(map[string]interface{})
-			if !ok || parentKind(parent) != "Gateway" {
+	scope := gatewayRouteScope{
+		Active:              true,
+		Gateways:            map[string]bool{},
+		GatewayAllListeners: map[string]bool{},
+		GatewayListeners:    map[string]map[string]bool{},
+		Routes:              map[string]bool{},
+		Services:            map[string]bool{},
+		EnvoyBackends:       map[string]bool{},
+		HTTPRouteFilters:    map[string]bool{},
+	}
+	addRoutes := func(kind string, routes []unstructured.Unstructured) {
+		for _, route := range routes {
+			if !gatewayObjectRefMatches(route, filter) {
 				continue
 			}
-			name := stringField(parent, "name")
+			scope.Routes[gatewayRouteScopeRouteKey(kind, route.GetNamespace(), route.GetName())] = true
+			for _, service := range gatewayRouteBackendServiceRefs(route) {
+				scope.Services[service] = true
+			}
+			for _, backend := range gatewayRouteEnvoyBackendRefs(route) {
+				scope.EnvoyBackends[backend] = true
+			}
+			if kind == "HTTPRoute" {
+				for _, filterRef := range gatewayHTTPRouteFilterRefs(route) {
+					scope.HTTPRouteFilters[filterRef] = true
+				}
+			}
+			parentRefs := sliceField(route.Object, "spec", "parentRefs")
+			for _, raw := range parentRefs {
+				parent, ok := raw.(map[string]interface{})
+				if !ok || parentKind(parent) != "Gateway" {
+					continue
+				}
+				name := stringField(parent, "name")
+				if name == "" {
+					continue
+				}
+				namespace := defaultString(stringField(parent, "namespace"), route.GetNamespace())
+				gatewayKey := namespace + "/" + name
+				scope.Gateways[gatewayKey] = true
+				sectionName := stringField(parent, "sectionName")
+				if sectionName == "" {
+					scope.GatewayAllListeners[gatewayKey] = true
+					continue
+				}
+				if scope.GatewayListeners[gatewayKey] == nil {
+					scope.GatewayListeners[gatewayKey] = map[string]bool{}
+				}
+				scope.GatewayListeners[gatewayKey][sectionName] = true
+			}
+		}
+	}
+	addRoutes("HTTPRoute", httpRoutes)
+	addRoutes("GRPCRoute", grpcRoutes)
+	addRoutes("TLSRoute", tlsRoutes)
+	addRoutes("TCPRoute", tcpRoutes)
+	addRoutes("UDPRoute", udpRoutes)
+	return scope
+}
+
+func gatewayRouteEnvoyBackendRefs(route unstructured.Unstructured) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rawRule := range sliceField(route.Object, "spec", "rules") {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawRef := range sliceField(rule, "backendRefs") {
+			ref, ok := rawRef.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if stringField(ref, "group") != "gateway.envoyproxy.io" || defaultString(stringField(ref, "kind"), "Service") != "Backend" {
+				continue
+			}
+			name := stringField(ref, "name")
 			if name == "" {
 				continue
 			}
-			namespace := defaultString(stringField(parent, "namespace"), route.GetNamespace())
-			out[namespace+"/"+name] = true
+			namespace := defaultString(stringField(ref, "namespace"), route.GetNamespace())
+			key := namespace + "/" + name
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, key)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func gatewayHTTPRouteFilterRefs(route unstructured.Unstructured) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rawRule := range sliceField(route.Object, "spec", "rules") {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawFilter := range sliceField(rule, "filters") {
+			filter, ok := rawFilter.(map[string]interface{})
+			if !ok || stringField(filter, "type") != "ExtensionRef" {
+				continue
+			}
+			ref := mapField(filter, "extensionRef")
+			if stringField(ref, "group") != "gateway.envoyproxy.io" || stringField(ref, "kind") != "HTTPRouteFilter" {
+				continue
+			}
+			name := stringField(ref, "name")
+			if name == "" {
+				continue
+			}
+			namespace := route.GetNamespace()
+			key := namespace + "/" + name
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, key)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func gatewayPolicyMatchesRouteScope(policy unstructured.Unstructured, scope gatewayRouteScope) bool {
+	for _, targetRef := range gatewayPolicyTargetRefs(policy) {
+		target := targetRef.ref
+		group := stringField(target, "group")
+		kind := defaultString(stringField(target, "kind"), "Service")
+		namespace := defaultString(stringField(target, "namespace"), policy.GetNamespace())
+		name := stringField(target, "name")
+		if name == "" {
+			continue
+		}
+		switch gatewayPolicyCanonicalTargetKind(group, kind) {
+		case "Gateway":
+			if scope.Gateways[namespace+"/"+name] {
+				return true
+			}
+		case "Service":
+			if scope.Services[namespace+"/"+name] {
+				return true
+			}
+		case "HTTPRoute", "GRPCRoute", "TLSRoute", "TCPRoute", "UDPRoute":
+			if scope.Routes[gatewayRouteScopeRouteKey(gatewayPolicyCanonicalTargetKind(group, kind), namespace, name)] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gatewayRouteScopeRouteKey(kind, namespace, name string) string {
+	return kind + "/" + namespace + "/" + name
+}
+
+func gatewayRouteBackendServiceRefs(route unstructured.Unstructured) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rawRule := range sliceField(route.Object, "spec", "rules") {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawRef := range sliceField(rule, "backendRefs") {
+			ref, ok := rawRef.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			group := stringField(ref, "group")
+			kind := defaultString(stringField(ref, "kind"), "Service")
+			name := stringField(ref, "name")
+			if name == "" || group != "" || kind != "Service" {
+				continue
+			}
+			namespace := defaultString(stringField(ref, "namespace"), route.GetNamespace())
+			key := namespace + "/" + name
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, key)
+			}
 		}
 	}
 	return out
@@ -4396,6 +5200,18 @@ func serviceHasPortName(service *corev1.Service, name string) bool {
 	}
 	for _, servicePort := range service.Spec.Ports {
 		if servicePort.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceExposesPort(service *corev1.Service, port int32) bool {
+	if service == nil || port <= 0 {
+		return false
+	}
+	for _, servicePort := range service.Spec.Ports {
+		if servicePort.Port == port {
 			return true
 		}
 	}

@@ -60,7 +60,8 @@ Gateway API checks:
 
 - GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, UDPRoute, ListenerSet, ReferenceGrant, BackendTLSPolicy, listener status, TLS Secret refs, backend Service refs, Service ports, and ready EndpointSlices
 - Gateway implementation Service checks, including listener port exposure and ready dataplane endpoints
-- generic Gateway policy attachment checks for experimental XBackendTrafficPolicy and Envoy Gateway BackendTrafficPolicy, ClientTrafficPolicy, SecurityPolicy, and EnvoyExtensionPolicy target refs/status when those CRDs are installed
+- generic Gateway policy attachment checks for experimental XBackendTrafficPolicy
+- Envoy Gateway checks for Backend, BackendTrafficPolicy, ClientTrafficPolicy, SecurityPolicy, EnvoyExtensionPolicy, EnvoyPatchPolicy, EnvoyProxy, and HTTPRouteFilter resources when those CRDs are installed
 - traffic-intent checks for HTTPRoute host/path/method/header/query matching, GRPCRoute service/method/header matching, TLSRoute SNI/hostname matching, listener and route hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
 - live HTTP/HTTPS probes that compare the advertised Gateway address with the in-cluster Gateway implementation Service path
 - follow-up `knm check service` command hints when Gateway runtime probes identify a single backend Service worth drilling into
@@ -171,7 +172,8 @@ The broad scan checks:
 - HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, and UDPRoute attachment and parent status
 - ListenerSet status and TLS refs
 - BackendTLSPolicy targets and CA refs
-- supported generic and Envoy Gateway policy target refs/status
+- supported generic Gateway policy target refs/status
+- Envoy Gateway Backend, policy, patch, proxy, and HTTPRouteFilter reference/status checks
 - cross-namespace ReferenceGrant requirements
 - backend Service existence, Service port matches, and ready EndpointSlices
 
@@ -191,7 +193,7 @@ knm check gateway --url https://payments.example.com/api --method POST --header 
 knm check gateway --url https://payments.example.com/api --expect-service apps/payments-api
 ```
 
-Traffic-intent mode traces the request through matching Gateway listeners, attached routes, route rules, backendRefs, Services, and EndpointSlices. It can explain request-specific misses that a broad scan cannot see, such as:
+Traffic-intent mode traces the request through matching Gateway listeners, selected route parent status, route rules, backendRefs, Services, and EndpointSlices. It can explain request-specific misses that a broad scan cannot see, such as:
 
 - no listener matching host, scheme, or port
 - a listener with no attached routes
@@ -209,6 +211,8 @@ Traffic-intent mode traces the request through matching Gateway listeners, attac
 Gateway protocol inference supports HTTP/HTTPS, GRPCRoute, and TLSRoute traffic intent. Use `--grpc-service`, `--grpc-method`, or `--protocol grpc` for GRPCRoute paths. Use `--protocol tls` or a TLS-style `--host ... --port 443` for TLSRoute/SNI paths.
 
 If a Gateway HTTP/HTTPS probe reaches Envoy but returns a backend failure, KNM can include a follow-up `knm check service ...` command for the selected backend Service when the path is unambiguous.
+
+When Envoy Gateway CRDs are installed, `check gateway` also inspects Envoy-specific configuration around policy targets, referenced Secrets/ConfigMaps, external auth and ext-proc backend Services, Backend TLS validation refs, HTTPRouteFilter credential injection, EnvoyPatchPolicy targets, and EnvoyProxy status.
 
 Use `--probe` when you want runtime proof for an HTTP/HTTPS Gateway path:
 
@@ -434,7 +438,7 @@ Terminal output modes:
 - Ingresses for discovery results
 - NetworkPolicies
 - Gateway API resources
-- Envoy Gateway policy CRDs and experimental Gateway policy CRDs when installed
+- Envoy Gateway CRDs and experimental Gateway policy CRDs when installed
 - Calico CRDs
 - Cilium CRDs
 - Istio CRDs: AuthorizationPolicies, RequestAuthentications, PeerAuthentications, Sidecars, VirtualServices, and DestinationRules

@@ -486,6 +486,519 @@ func TestGatewayScanDiagnosesEnvoyPolicyServiceTargetProblems(t *testing.T) {
 	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy app/traffic targets Service app/payments-api, but that Service is missing or unreadable")
 }
 
+func TestGatewayScanDiagnosesEnvoyBackendTrafficPolicySemantics(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("grpc", nil)),
+			testGatewayRouteKind("GRPCRoute", "app", "ledger", "edge", "public", []map[string]interface{}{
+				{"name": "ledger-api", "port": int64(50051)},
+			}, "True", "True"),
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "edge", "traffic", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "public"},
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "GRPCRoute", "namespace": "app", "name": "ledger"},
+			}, map[string]interface{}{
+				"mergeType":     "StrategicMerge",
+				"requestBuffer": map[string]interface{}{"limit": "1Mi"},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "ledger-api", 50051),
+			testGatewayEndpointSlice("app", "ledger-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy edge/traffic targets Gateway edge/public and sets mergeType, but mergeType cannot be used when targeting a Gateway")
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy edge/traffic enables requestBuffer for GRPCRoute app/ledger. This is usually only safe for unary gRPC; streaming gRPC can hang or fail")
+	assertGatewayDiagnosisNotContains(t, report, "requestBuffer for GRPCRoute app/ledger")
+}
+
+func TestGatewayScanDiagnosesEnvoyClientTrafficPolicyTLSRefs(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("https", nil)),
+			testEnvoyPolicyWithSpec("ClientTrafficPolicy", "edge", "client", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "public"},
+			}, map[string]interface{}{
+				"enableProxyProtocol": true,
+				"proxyProtocol":       map[string]interface{}{},
+				"tls": map[string]interface{}{
+					"clientValidation": map[string]interface{}{
+						"caCertificateRefs": []interface{}{
+							map[string]interface{}{"group": "", "kind": "ConfigMap", "name": "client-ca"},
+							map[string]interface{}{"group": "", "kind": "Secret", "name": "client-secret-ca"},
+						},
+						"crl": map[string]interface{}{
+							"refs": []interface{}{
+								map[string]interface{}{"group": "", "kind": "ConfigMap", "name": "client-crl"},
+							},
+						},
+					},
+				},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "client-ca"}, Data: map[string]string{"note": "missing ca"}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "client-crl"}, Data: map[string]string{"note": "missing crl"}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "edge", Name: "client-secret-ca"}, Data: map[string][]byte{"note": []byte("missing ca")}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "Envoy ClientTrafficPolicy edge/client sets both enableProxyProtocol and proxyProtocol; proxyProtocol takes precedence")
+	assertGatewayDiagnosisNotContains(t, report, "enableProxyProtocol and proxyProtocol")
+	assertGatewayDiagnosisContains(t, report, "Envoy ClientTrafficPolicy edge/client clientValidation caCertificateRef 1 ConfigMap edge/client-ca is missing key ca.crt")
+	assertGatewayDiagnosisContains(t, report, "Envoy ClientTrafficPolicy edge/client clientValidation caCertificateRef 2 Secret edge/client-secret-ca is missing key ca.crt")
+	assertGatewayDiagnosisContains(t, report, "Envoy ClientTrafficPolicy edge/client clientValidation crl 1 ConfigMap edge/client-crl is missing key ca.crl")
+}
+
+func TestGatewayScanDiagnosesEnvoyExtensionPolicyExtProcBackendProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testGatewayHTTPRoute("app", "orders", "edge", "public", []map[string]interface{}{
+				{"name": "orders-api", "port": int64(80)},
+			}, "True", "True"),
+			testEnvoyPolicyWithSpec("EnvoyExtensionPolicy", "app", "extensions", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "orders"},
+			}, map[string]interface{}{
+				"extProc": []interface{}{
+					map[string]interface{}{
+						"backendRefs": []interface{}{
+							map[string]interface{}{"name": "processor", "port": int64(9443)},
+							map[string]interface{}{"name": "missing-processor", "port": int64(9000)},
+						},
+					},
+				},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "orders-api", 80),
+			testGatewayEndpointSlice("app", "orders-api", true, "10.0.0.10"),
+			testGatewayService("app", "processor", 9000),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyExtensionPolicy app/extensions external processor backend Service app/processor does not expose port 9443")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyExtensionPolicy app/extensions external processor backend Service app/missing-processor is missing or unreadable")
+}
+
+func TestGatewayScanDiagnosesEnvoyBackendProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testEnvoyObject("Backend", "app", "inventory", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"type": "Endpoints",
+					"endpoints": []interface{}{
+						map[string]interface{}{"fqdn": map[string]interface{}{"port": int64(443)}},
+						map[string]interface{}{"ip": map[string]interface{}{"address": "not-an-ip", "port": int64(9443)}},
+						map[string]interface{}{"unix": map[string]interface{}{"path": strings.Repeat("a", 109)}},
+						map[string]interface{}{"fqdn": map[string]interface{}{"hostname": "inventory.internal", "port": int64(443)}, "ip": map[string]interface{}{"address": "10.0.0.10", "port": int64(443)}},
+					},
+					"tls": map[string]interface{}{
+						"caCertificateRefs": []interface{}{
+							map[string]interface{}{"group": "", "kind": "ConfigMap", "name": "inventory-ca"},
+						},
+						"wellKnownCACertificates": "System",
+						"clientCertificateRef":    map[string]interface{}{"group": "", "kind": "Secret", "name": "inventory-client"},
+					},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "inventory-ca"}, Data: map[string]string{"note": "missing ca"}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "inventory-client"}, Data: map[string][]byte{"tls.key": []byte("key")}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory endpoint 1 has an FQDN endpoint with no hostname")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory endpoint 2 has an invalid IP address")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory endpoint 3 has a Unix socket path longer than 108 characters")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory endpoint 4 sets multiple address types")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory TLS specifies both caCertificateRefs and wellKnownCACertificates")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory tls caCertificateRef 1 ConfigMap app/inventory-ca is missing key ca.crt")
+	assertGatewayDiagnosisContains(t, report, "Envoy Backend app/inventory tls clientCertificateRef Secret app/inventory-client is missing key tls.crt")
+}
+
+func TestGatewayScanDiagnosesEnvoyHTTPRouteFilterProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testEnvoyObject("HTTPRouteFilter", "app", "catalog-filter", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"directResponse": map[string]interface{}{"statusCode": int64(700)},
+					"credentialInjection": map[string]interface{}{
+						"credential": map[string]interface{}{
+							"valueRef": map[string]interface{}{"group": "", "kind": "Secret", "name": "catalog-credential"},
+						},
+					},
+					"urlRewrite": map[string]interface{}{
+						"path": map[string]interface{}{
+							"type": "ReplaceRegexMatch",
+							"replaceRegexMatch": map[string]interface{}{
+								"pattern": "[",
+							},
+						},
+					},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "catalog-credential"}, Data: map[string][]byte{"note": []byte("missing credential")}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy HTTPRouteFilter app/catalog-filter directResponse has invalid HTTP status code 700")
+	assertGatewayDiagnosisContains(t, report, "Envoy HTTPRouteFilter app/catalog-filter credentialInjection valueRef Secret app/catalog-credential is missing key credential")
+	assertGatewayDiagnosisContains(t, report, "Envoy HTTPRouteFilter app/catalog-filter URL rewrite has an invalid regex pattern")
+}
+
+func TestGatewayRouteFilterScopesEnvoyHTTPRouteFilters(t *testing.T) {
+	catalogRoute := testGatewayHTTPRouteWithRules("app", "catalog", []map[string]interface{}{
+		{"name": "public", "namespace": "edge"},
+	}, []map[string]interface{}{
+		{
+			"backendRefs": []interface{}{testBackendRef("catalog-api", "", int64(80))},
+			"filters": []interface{}{
+				map[string]interface{}{
+					"type": "ExtensionRef",
+					"extensionRef": map[string]interface{}{
+						"group": "gateway.envoyproxy.io",
+						"kind":  "HTTPRouteFilter",
+						"name":  "catalog-filter",
+					},
+				},
+			},
+		},
+	})
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			catalogRoute,
+			testGatewayHTTPRoute("app", "orders", "edge", "public", []map[string]interface{}{
+				{"name": "orders-api", "port": int64(80)},
+			}, "True", "True"),
+			testEnvoyObject("HTTPRouteFilter", "app", "catalog-filter", map[string]interface{}{
+				"spec": map[string]interface{}{"directResponse": map[string]interface{}{"statusCode": int64(700)}},
+			}),
+			testEnvoyObject("HTTPRouteFilter", "app", "orders-filter", map[string]interface{}{
+				"spec": map[string]interface{}{"directResponse": map[string]interface{}{"statusCode": int64(701)}},
+			}),
+			testEnvoyObject("Backend", "app", "inventory", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"type": "Endpoints",
+					"tls": map[string]interface{}{
+						"caCertificateRefs": []interface{}{
+							map[string]interface{}{"group": "", "kind": "ConfigMap", "name": "inventory-ca"},
+						},
+					},
+				},
+			}),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+			testGatewayService("app", "orders-api", 80),
+			testGatewayEndpointSlice("app", "orders-api", true, "10.0.0.11"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{RouteRef: "app/catalog"})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy HTTPRouteFilter app/catalog-filter directResponse has invalid HTTP status code 700")
+	assertGatewayDiagnosisNotContains(t, report, "orders-filter")
+	assertGatewayDiagnosisNotContains(t, report, "inventory")
+}
+
+func TestGatewayScanDiagnosesEnvoyPatchPolicyProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testEnvoyObject("EnvoyPatchPolicy", "edge", "gateway-patch", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"targetRef": map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "missing"},
+					"type":      "JSONPatch",
+					"jsonPatches": []interface{}{
+						map[string]interface{}{"name": "listener_0", "type": "type.googleapis.com/envoy.config.listener.v3.Listener"},
+					},
+				},
+			}),
+			testEnvoyObject("EnvoyPatchPolicy", "edge", "class-patch", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"targetRef":   map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "GatewayClass", "name": "missing-class"},
+					"type":        "Bogus",
+					"jsonPatches": []interface{}{},
+				},
+			}),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyPatchPolicy edge/gateway-patch targets Gateway edge/missing, but that Gateway was not found")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyPatchPolicy edge/gateway-patch jsonPatch 1 has no JSON patch operation")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyPatchPolicy edge/class-patch targets GatewayClass missing-class, but that GatewayClass was not found")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyPatchPolicy edge/class-patch uses unsupported type \"Bogus\"")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyPatchPolicy edge/class-patch has no jsonPatches")
+}
+
+func TestGatewayScanDiagnosesEnvoyProxyProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testEnvoyObject("EnvoyProxy", "edge", "proxy", map[string]interface{}{
+				"spec": map[string]interface{}{
+					"provider":    map[string]interface{}{"type": "Other"},
+					"concurrency": int64(-1),
+				},
+				"status": map[string]interface{}{
+					"ancestors": []interface{}{
+						map[string]interface{}{
+							"conditions": []interface{}{
+								testGatewayCondition("Accepted", "False", "Invalid", "bad provider"),
+							},
+						},
+					},
+				},
+			}),
+		},
+		nil,
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "EnvoyProxy edge/proxy uses unsupported provider.type \"Other\"")
+	assertGatewayDiagnosisContains(t, report, "EnvoyProxy edge/proxy has invalid negative concurrency")
+	assertGatewayDiagnosisContains(t, report, "EnvoyProxy edge/proxy is not Accepted: Invalid: bad provider")
+}
+
+func TestGatewayRouteFilterScopesEnvoyPolicies(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testGatewayHTTPRoute("app", "catalog", "edge", "public", []map[string]interface{}{
+				{"name": "catalog-api", "port": int64(80)},
+			}, "True", "True"),
+			testGatewayRouteKind("GRPCRoute", "app", "ledger", "edge", "public", []map[string]interface{}{
+				{"name": "ledger-api", "port": int64(50051)},
+			}, "True", "True"),
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "edge", "edge-traffic", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "public"},
+			}, map[string]interface{}{
+				"mergeType": "StrategicMerge",
+			}, "True", "True", "Accepted"),
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "app", "ledger-buffer", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "GRPCRoute", "name": "ledger"},
+			}, map[string]interface{}{
+				"requestBuffer": map[string]interface{}{"limit": "1Mi"},
+			}, "True", "True", "Accepted"),
+			testEnvoyPolicyWithSpec("EnvoyExtensionPolicy", "app", "catalog-processing", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "catalog"},
+			}, map[string]interface{}{
+				"extProc": []interface{}{
+					map[string]interface{}{
+						"backendRefs": []interface{}{
+							map[string]interface{}{"name": "processor", "port": int64(9443)},
+						},
+					},
+				},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "catalog-api", 80),
+			testGatewayEndpointSlice("app", "catalog-api", true, "10.0.0.10"),
+			testGatewayService("app", "ledger-api", 50051),
+			testGatewayEndpointSlice("app", "ledger-api", true, "10.0.0.11"),
+			testGatewayService("app", "processor", 9000),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{RouteRef: "app/catalog"})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy BackendTrafficPolicy edge/edge-traffic targets Gateway edge/public and sets mergeType, but mergeType cannot be used when targeting a Gateway")
+	assertGatewayDiagnosisContains(t, report, "Envoy EnvoyExtensionPolicy app/catalog-processing external processor backend Service app/processor does not expose port 9443")
+	assertGatewayDiagnosisNotContains(t, report, "Envoy BackendTrafficPolicy app/ledger-buffer enables requestBuffer")
+	assertGatewayDiagnosisNotContains(t, report, "Gateway API Route \"app/catalog\" was not found")
+}
+
+func TestGatewayRouteFilterMatchesGRPCRoute(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("grpc", nil)),
+			testGatewayRouteKind("GRPCRoute", "app", "ledger", "edge", "public", []map[string]interface{}{
+				{"name": "ledger-api", "port": int64(50051)},
+			}, "True", "True"),
+			testEnvoyPolicyWithSpec("BackendTrafficPolicy", "app", "ledger-buffer", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "GRPCRoute", "name": "ledger"},
+			}, map[string]interface{}{
+				"requestBuffer": map[string]interface{}{"limit": "1Mi"},
+			}, "True", "True", "Accepted"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "ledger-api", 50051),
+			testGatewayEndpointSlice("app", "ledger-api", true, "10.0.0.11"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{RouteRef: "app/ledger"})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "Envoy BackendTrafficPolicy app/ledger-buffer enables requestBuffer for GRPCRoute app/ledger. This is usually only safe for unary gRPC; streaming gRPC can hang or fail")
+	assertGatewayDiagnosisNotContains(t, report, "requestBuffer for GRPCRoute app/ledger")
+	assertGatewayDiagnosisNotContains(t, report, "Gateway API Route \"app/ledger\" was not found")
+}
+
+func TestGatewayScanDiagnosesEnvoySecurityPolicySecretProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testEnvoySecurityPolicy("app", "security", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "orders"},
+			}, map[string]interface{}{
+				"basicAuth": map[string]interface{}{
+					"users": map[string]interface{}{"name": "basic-users"},
+				},
+				"apiKeyAuth": map[string]interface{}{
+					"credentialRefs": []interface{}{
+						map[string]interface{}{"name": "api-keys"},
+						map[string]interface{}{"name": "empty-api-keys"},
+					},
+				},
+				"oidc": map[string]interface{}{
+					"clientIDRef":  map[string]interface{}{"name": "oidc-client-id"},
+					"clientSecret": map[string]interface{}{"name": "oidc-client-secret"},
+				},
+			}, "True", "True", "Accepted"),
+			testGatewayHTTPRoute("app", "orders", "edge", "public", []map[string]interface{}{
+				{"name": "orders-api", "port": int64(80)},
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "orders-api", 80),
+			testGatewayEndpointSlice("app", "orders-api", true, "10.0.0.10"),
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "basic-users"}, Data: map[string][]byte{}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "api-keys"}, Data: map[string][]byte{"client-a": []byte("key")}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "empty-api-keys"}, Data: map[string][]byte{}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "oidc-client-id"}, Data: map[string][]byte{"wrong": []byte("id")}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "oidc-client-secret"}, Data: map[string][]byte{"wrong": []byte("secret")}},
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security basicAuth users Secret app/basic-users is missing key .htpasswd")
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security apiKeyAuth credentialRef 2 Secret app/empty-api-keys has no credential data")
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security oidc clientIDRef Secret app/oidc-client-id is missing key client-id")
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security oidc clientSecret Secret app/oidc-client-secret is missing key client-secret")
+}
+
+func TestGatewayScanDiagnosesEnvoySecurityPolicyExtAuthBackendProblems(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("http", nil)),
+			testEnvoySecurityPolicy("app", "security", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "orders"},
+			}, map[string]interface{}{
+				"extAuth": map[string]interface{}{
+					"http": map[string]interface{}{
+						"backendRefs": []interface{}{
+							map[string]interface{}{"name": "auth-api", "port": int64(8443)},
+							map[string]interface{}{"name": "missing-auth", "port": int64(8080)},
+						},
+					},
+				},
+			}, "True", "True", "Accepted"),
+			testGatewayHTTPRoute("app", "orders", "edge", "public", []map[string]interface{}{
+				{"name": "orders-api", "port": int64(80)},
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "orders-api", 80),
+			testGatewayEndpointSlice("app", "orders-api", true, "10.0.0.10"),
+			testGatewayService("app", "auth-api", 8080),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security external authorization backend Service app/auth-api does not expose port 8443")
+	assertGatewayDiagnosisContains(t, report, "Envoy SecurityPolicy app/security external authorization backend Service app/missing-auth is missing or unreadable")
+}
+
+func TestGatewayScanWarnsEnvoySecurityPolicyHTTPAuthOnTCPRoute(t *testing.T) {
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGateway("edge", "public", "istio", true, "True", "True", testGatewayListener("tcp", nil)),
+			testEnvoySecurityPolicy("app", "security", []interface{}{
+				map[string]interface{}{"group": "gateway.networking.k8s.io", "kind": "TCPRoute", "name": "tcp-orders"},
+			}, map[string]interface{}{
+				"jwt": map[string]interface{}{
+					"providers": []interface{}{map[string]interface{}{"name": "issuer"}},
+				},
+				"authorization": map[string]interface{}{
+					"rules": []interface{}{map[string]interface{}{"name": "allow-admins"}},
+				},
+			}, "True", "True", "Accepted"),
+			testGatewayRouteKind("TCPRoute", "app", "tcp-orders", "edge", "public", []map[string]interface{}{
+				{"name": "orders-api", "port": int64(80)},
+			}, "True", "True"),
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "orders-api", 80),
+			testGatewayEndpointSlice("app", "orders-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayStaticScan(context.Background(), client, report, GatewayOptions{})
+
+	t.Logf("diagnosis output:\n%s", gatewayDiagnosisLog(report))
+	assertResultContains(t, report, model.StatusWarn, "Envoy SecurityPolicy app/security targets TCPRoute app/tcp-orders with HTTP authentication settings; those settings do not apply to raw TCP traffic")
+	assertResultContains(t, report, model.StatusWarn, "Envoy SecurityPolicy app/security targets TCPRoute app/tcp-orders with HTTP authorization rules; only client-IP based authorization applies to TCPRoute targets")
+	assertGatewayDiagnosisNotContains(t, report, "HTTP authentication settings; those settings do not apply to raw TCP traffic")
+	assertGatewayDiagnosisNotContains(t, report, "HTTP authorization rules; only client-IP based authorization applies to TCPRoute targets")
+}
+
 func TestGatewayScanDiagnosesXBackendTrafficPolicyTargetProblems(t *testing.T) {
 	client := fakeGatewayClient(t,
 		[]unstructured.Unstructured{
@@ -1209,6 +1722,46 @@ func TestGatewayTrafficIntentScanMatchesBackendPath(t *testing.T) {
 	if report.CountByStatus(model.StatusFail) != 0 {
 		t.Fatalf("expected no failures, got %#v", report.Results)
 	}
+}
+
+func TestGatewayTrafficIntentReportsRejectedMatchedRoute(t *testing.T) {
+	route := testGatewayHTTPRouteForHostname("app", "payments", "edge", "public", "payments.knm.local", []map[string]interface{}{
+		{"backendRefs": []interface{}{testBackendRef("payments-api", "", int64(80))}},
+	})
+	parents := sliceField(route.Object, "status", "parents")
+	if len(parents) == 0 {
+		t.Fatal("test route has no parent status")
+	}
+	parent := parents[0].(map[string]interface{})
+	parent["conditions"] = []interface{}{
+		testGatewayCondition("Accepted", "False", "UnsupportedValue", "invalid extension filter"),
+		testGatewayCondition("ResolvedRefs", "True", "ResolvedRefs", ""),
+	}
+	if err := unstructured.SetNestedSlice(route.Object, parents, "status", "parents"); err != nil {
+		t.Fatalf("set route parent status: %v", err)
+	}
+	client := fakeGatewayClient(t,
+		[]unstructured.Unstructured{
+			testGatewayClass("istio", "True", "Accepted"),
+			testGatewayForHostname("edge", "public", "istio", "web", "*.knm.local"),
+			route,
+		},
+		[]kruntime.Object{
+			testGatewayService("app", "payments-api", 80),
+			testGatewayEndpointSlice("app", "payments-api", true, "10.0.0.10"),
+		},
+	)
+	report := model.NewReport("check gateway", model.Target{})
+
+	runGatewayIntentScan(context.Background(), client, report, GatewayOptions{}, gatewayTrafficIntent{
+		Scheme: "http",
+		Host:   "payments.knm.local",
+		Port:   80,
+		Path:   "/",
+	})
+
+	assertGatewayDiagnosisContains(t, report, "HTTPRoute app/payments is not accepted by Gateway edge/public: UnsupportedValue: invalid extension filter")
+	assertResultContains(t, report, model.StatusFail, "HTTPRoute app/payments is not accepted by Gateway edge/public")
 }
 
 func TestGatewayTrafficIntentExpectedServicePasses(t *testing.T) {
@@ -2360,10 +2913,14 @@ func fakeGatewayClient(t *testing.T, gatewayObjects []unstructured.Unstructured,
 		tcpRouteGVR:                  "TCPRouteList",
 		udpRouteGVR:                  "UDPRouteList",
 		xBackendTrafficPolicyGVR:     "XBackendTrafficPolicyList",
+		envoyBackendGVR:              "BackendList",
 		envoyBackendTrafficPolicyGVR: "BackendTrafficPolicyList",
 		envoyClientTrafficPolicyGVR:  "ClientTrafficPolicyList",
 		envoySecurityPolicyGVR:       "SecurityPolicyList",
 		envoyEnvoyExtensionPolicyGVR: "EnvoyExtensionPolicyList",
+		envoyEnvoyPatchPolicyGVR:     "EnvoyPatchPolicyList",
+		envoyEnvoyProxyGVR:           "EnvoyProxyList",
+		envoyHTTPRouteFilterGVR:      "HTTPRouteFilterList",
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(kruntime.NewScheme(), listKinds)
 	for i := range gatewayObjects {
@@ -2396,6 +2953,8 @@ func runGatewayIntentScan(ctx context.Context, client *kube.Client, report *mode
 func gatewayTestGVRForObject(object unstructured.Unstructured) schema.GroupVersionResource {
 	if strings.HasPrefix(object.GetAPIVersion(), "gateway.envoyproxy.io/") {
 		switch object.GetKind() {
+		case "Backend":
+			return envoyBackendGVR
 		case "BackendTrafficPolicy":
 			return envoyBackendTrafficPolicyGVR
 		case "ClientTrafficPolicy":
@@ -2404,6 +2963,12 @@ func gatewayTestGVRForObject(object unstructured.Unstructured) schema.GroupVersi
 			return envoySecurityPolicyGVR
 		case "EnvoyExtensionPolicy":
 			return envoyEnvoyExtensionPolicyGVR
+		case "EnvoyPatchPolicy":
+			return envoyEnvoyPatchPolicyGVR
+		case "EnvoyProxy":
+			return envoyEnvoyProxyGVR
+		case "HTTPRouteFilter":
+			return envoyHTTPRouteFilterGVR
 		}
 	}
 	if strings.HasPrefix(object.GetAPIVersion(), "gateway.networking.x-k8s.io/") && object.GetKind() == "XBackendTrafficPolicy" {
@@ -2687,6 +3252,36 @@ func testBackendTLSPolicy(namespace, name, targetService, sectionName, caConfigM
 
 func testEnvoyPolicy(kind, namespace, name string, targetRefs []interface{}, acceptedStatus, resolvedStatus, reason string) unstructured.Unstructured {
 	obj := gatewayUnstructured(kind, namespace, name, gatewayPolicyFields(targetRefs, acceptedStatus, resolvedStatus, reason))
+	obj.SetAPIVersion("gateway.envoyproxy.io/v1alpha1")
+	return obj
+}
+
+func testEnvoyPolicyWithSpec(kind, namespace, name string, targetRefs []interface{}, spec map[string]interface{}, acceptedStatus, resolvedStatus, reason string) unstructured.Unstructured {
+	fields := gatewayPolicyFields(targetRefs, acceptedStatus, resolvedStatus, reason)
+	policySpec := mapField(fields, "spec")
+	for key, value := range spec {
+		policySpec[key] = value
+	}
+	fields["spec"] = policySpec
+	obj := gatewayUnstructured(kind, namespace, name, fields)
+	obj.SetAPIVersion("gateway.envoyproxy.io/v1alpha1")
+	return obj
+}
+
+func testEnvoyObject(kind, namespace, name string, fields map[string]interface{}) unstructured.Unstructured {
+	obj := gatewayUnstructured(kind, namespace, name, fields)
+	obj.SetAPIVersion("gateway.envoyproxy.io/v1alpha1")
+	return obj
+}
+
+func testEnvoySecurityPolicy(namespace, name string, targetRefs []interface{}, spec map[string]interface{}, acceptedStatus, resolvedStatus, reason string) unstructured.Unstructured {
+	fields := gatewayPolicyFields(targetRefs, acceptedStatus, resolvedStatus, reason)
+	policySpec := mapField(fields, "spec")
+	for key, value := range spec {
+		policySpec[key] = value
+	}
+	fields["spec"] = policySpec
+	obj := gatewayUnstructured("SecurityPolicy", namespace, name, fields)
 	obj.SetAPIVersion("gateway.envoyproxy.io/v1alpha1")
 	return obj
 }
