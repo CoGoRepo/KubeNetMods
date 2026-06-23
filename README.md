@@ -63,6 +63,9 @@ Gateway API checks:
 - generic Gateway policy attachment checks for experimental XBackendTrafficPolicy
 - Envoy Gateway checks for Backend, BackendTrafficPolicy, ClientTrafficPolicy, SecurityPolicy, EnvoyExtensionPolicy, EnvoyPatchPolicy, EnvoyProxy, and HTTPRouteFilter resources when those CRDs are installed
 - Envoy Gateway BackendTrafficPolicy semantics for targetRefs, targetSelectors, merge behavior, rate limits, circuit breakers, fault injection, response overrides, request buffering, health checks, timeouts, load balancing, bandwidth limits, admission control, HTTP/2, TCP keepalive, and compression settings
+- Envoy Gateway SecurityPolicy semantics for basic auth, API key extraction, JWT/JWKS refs, OIDC refs, external auth backends, authorization JWT providers, CORS risks, TCPRoute applicability, and selector targets
+- Envoy Gateway ClientTrafficPolicy semantics for proxy protocol conflicts, client IP detection, downstream TLS validation refs, TLS version bounds, connection limits, HTTP/2 limits, timeouts, header/path rejection behavior, and client certificate trust sources
+- Envoy Gateway EnvoyExtensionPolicy, HTTPRouteFilter, EnvoyProxy, Backend, and EnvoyPatchPolicy diagnostics for referenced Services, Secrets, ConfigMaps, TLS material, Lua/Wasm/ext-proc wiring, regex filters, direct-response bodies, dynamic modules, backend endpoints, and JSON patch operation shape
 - traffic-intent checks for HTTPRoute host/path/method/header/query matching, GRPCRoute service/method/header matching, TLSRoute SNI/hostname matching, listener and route hostname misses, backendRef failures, unsupported backend kinds, inactive `weight: 0` backendRefs, mixed weighted backend paths, redirects, URL rewrites, request mirrors, and expected backend Services
 - live HTTP/HTTPS probes that compare the advertised Gateway address with the in-cluster Gateway implementation Service path
 - follow-up `knm check service` command hints when Gateway runtime probes identify a single backend Service worth drilling into
@@ -175,7 +178,7 @@ The broad scan checks:
 - BackendTLSPolicy targets and CA refs
 - supported generic Gateway policy target refs/status
 - Envoy Gateway Backend, policy, patch, proxy, and HTTPRouteFilter reference/status checks
-- Envoy Gateway BackendTrafficPolicy target resolution, accepted status, merge conflicts, selector attachment, and traffic-impacting policy settings
+- Envoy Gateway BackendTrafficPolicy, SecurityPolicy, ClientTrafficPolicy, EnvoyExtensionPolicy, HTTPRouteFilter, EnvoyProxy, Backend, and EnvoyPatchPolicy semantics that can explain broken Gateway paths or CI preflight failures
 - cross-namespace ReferenceGrant requirements
 - backend Service existence, Service port matches, and ready EndpointSlices
 
@@ -214,7 +217,7 @@ Gateway protocol inference supports HTTP/HTTPS, GRPCRoute, and TLSRoute traffic 
 
 If a Gateway HTTP/HTTPS probe reaches Envoy but returns a backend failure, KNM can include a follow-up `knm check service ...` command for the selected backend Service when the path is unambiguous.
 
-When Envoy Gateway CRDs are installed, `check gateway` also inspects Envoy-specific configuration around policy targets, referenced Secrets/ConfigMaps, external auth and ext-proc backend Services, Backend TLS validation refs, HTTPRouteFilter credential injection, EnvoyPatchPolicy targets, and EnvoyProxy status.
+When Envoy Gateway CRDs are installed, `check gateway` also inspects Envoy-specific configuration around policy targets, referenced Secrets/ConfigMaps, external auth and ext-proc backend Services, Backend TLS validation refs, HTTPRouteFilter credential injection and regex rewrites, EnvoyPatchPolicy targets and JSON patch operations, EnvoyProxy status, and Envoy Backend endpoint/TLS configuration.
 
 For Envoy Gateway BackendTrafficPolicy, KNM checks accepted controller status plus static policy semantics that can affect a routed path:
 
@@ -229,6 +232,35 @@ For Envoy Gateway BackendTrafficPolicy, KNM checks accepted controller status pl
 - active health checks that only treat error responses as healthy
 - TCP timeouts on HTTPRoute/GRPCRoute targets
 - load-balancer, bandwidth, HTTP/2, TCP keepalive, and compression settings that are risky or ambiguous
+
+For Envoy Gateway SecurityPolicy, KNM checks:
+
+- targetRefs and targetSelectors for Gateway, HTTPRoute, GRPCRoute, and TCPRoute targets
+- basicAuth users Secret refs and required `.htpasswd` data
+- apiKeyAuth credential refs plus header/cookie/query extraction posture
+- JWT provider names, local JWKS refs, remote JWKS backend Services, and Authorization rules that reference missing JWT providers
+- OIDC client ID/client secret refs and OIDC provider backend Services
+- extAuth HTTP/gRPC backend Services and context extension Secret/ConfigMap refs
+- CORS credentialed wildcard origins
+- HTTP-only auth settings attached to TCPRoute targets
+
+For Envoy Gateway ClientTrafficPolicy, KNM checks:
+
+- proxy protocol conflicts
+- client IP detection conflicts
+- downstream TLS client validation refs, trust sources, and TLS version bounds
+- connection limits and buffer settings that can reject or stall downstream traffic
+- HTTP/2 stream/window settings that can block client traffic
+- zero-valued downstream timeouts
+- header underscore and escaped-slash rejection behavior
+
+For Envoy Gateway extension and implementation resources, KNM checks:
+
+- EnvoyExtensionPolicy extProc backend Services, Lua ValueRefs, Wasm CA refs, Wasm pull secrets, buffering posture, and duplicate dynamic module names
+- HTTPRouteFilter credential injection refs, direct-response body refs, URL rewrite regex patterns, and cookie regex matches
+- Envoy Backend endpoint shape, endpoint address validity, TLS CA refs, and client certificate key/cert material
+- EnvoyProxy provider/concurrency status, backendTLS client certificate refs, and duplicate dynamic module names
+- EnvoyPatchPolicy target refs plus JSON patch operation `op`, `path`/`jsonPath`, `from`, and `value` requirements
 
 Use `--probe` when you want runtime proof for an HTTP/HTTPS Gateway path:
 

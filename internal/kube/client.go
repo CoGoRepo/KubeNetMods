@@ -39,6 +39,12 @@ func New(contextName string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.QPS == 0 {
+		config.QPS = 30
+	}
+	if config.Burst == 0 {
+		config.Burst = 60
+	}
 
 	core, err := kubernetes.NewForConfig(config)
 	if err != nil {
